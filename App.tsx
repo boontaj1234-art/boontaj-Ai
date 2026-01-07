@@ -4,26 +4,26 @@ import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import RegistrationPage from './pages/RegistrationPage';
+import AdminPage from './pages/AdminPage';
 import { UserSession } from './types';
 
 const App: React.FC = () => {
-  const [currentPage, setCurrentPage] = useState<'login' | 'dashboard' | 'register'>('login');
+  const [currentPage, setCurrentPage] = useState<'login' | 'dashboard' | 'register' | 'admin'>('login');
   const [session, setSession] = useState<UserSession | null>(null);
 
-  // Persistence logic (optional, for development convenience)
   useEffect(() => {
     const savedSession = localStorage.getItem('sports_session');
     if (savedSession) {
       const parsed = JSON.parse(savedSession);
       setSession(parsed);
-      setCurrentPage('dashboard');
+      setCurrentPage(parsed.isAdmin ? 'admin' : 'dashboard');
     }
   }, []);
 
-  const handleLogin = (schoolId: string, schoolName: string) => {
-    const newSession = { schoolId, schoolName, isLoggedIn: true };
+  const handleLogin = (schoolId: string, schoolName: string, isAdmin: boolean = false) => {
+    const newSession = { schoolId, schoolName, isLoggedIn: true, isAdmin };
     setSession(newSession);
-    setCurrentPage('dashboard');
+    setCurrentPage(isAdmin ? 'admin' : 'dashboard');
     localStorage.setItem('sports_session', JSON.stringify(newSession));
   };
 
@@ -36,6 +36,10 @@ const App: React.FC = () => {
   const renderPage = () => {
     if (!session || currentPage === 'login') {
       return <LoginPage onLogin={handleLogin} />;
+    }
+
+    if (session.isAdmin) {
+      return <AdminPage />;
     }
 
     switch (currentPage) {

@@ -2,6 +2,8 @@
 export interface School {
   id: string;
   name: string;
+  username?: string;
+  password?: string;
 }
 
 export interface Sport {
@@ -16,6 +18,7 @@ export interface UserSession {
   schoolId: string;
   schoolName: string;
   isLoggedIn: boolean;
+  isAdmin?: boolean;
 }
 
 export interface RegistrationRecord {

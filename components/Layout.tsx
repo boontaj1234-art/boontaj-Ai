@@ -72,7 +72,7 @@ const Layout: React.FC<LayoutProps> = ({ children, session, onLogout, onNavigate
       <footer className="bg-white border-t py-8 text-center text-slate-500 mt-auto">
         <div className="container mx-auto px-4">
           <p className="text-sm">© 2024 กลุ่มโรงเรียนตะเคียน–ลมศักดิ์ สพป.ศรีสะเกษ เขต 3</p>
-          <p className="text-xs mt-1">ออกแบบโดยระบบอัตโนมัติเพื่อการจัดการแข่งขันกีฬาที่ทันสมัย</p>
+          <p className="text-xs mt-1">ออกแบบโดยฝ่ายไอทีกลุ่มตะเคียน-ลมศักดิ์เพื่อการจัดการแข่งขันกีฬาที่ทันสมัย</p>
         </div>
       </footer>
     </div>
