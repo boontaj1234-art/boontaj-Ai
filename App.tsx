@@ -8,7 +8,7 @@ import AdminPage from './pages/AdminPage';
 import { UserSession } from './types';
 
 const App: React.FC = () => {
-  const [currentPage, setCurrentPage] = useState<'login' | 'dashboard' | 'register' | 'admin'>('login');
+  const [currentPage, setCurrentPage] = useState<'login' | 'dashboard' | 'admin'>('login');
   const [session, setSession] = useState<UserSession | null>(null);
 
   useEffect(() => {
@@ -42,24 +42,13 @@ const App: React.FC = () => {
       return <AdminPage />;
     }
 
-    switch (currentPage) {
-      case 'dashboard':
-        return (
-          <DashboardPage 
-            session={session} 
-            onNavigate={(path) => setCurrentPage(path as any)} 
-          />
-        );
-      case 'register':
-        return (
-          <RegistrationPage 
-            schoolName={session.schoolName}
-            onBack={() => setCurrentPage('dashboard')} 
-          />
-        );
-      default:
-        return <DashboardPage session={session} onNavigate={(path) => setCurrentPage(path as any)} />;
-    }
+    // สำหรับโรงเรียน ให้ DashboardPage เป็นตัวจัดการเมนูย่อยเองผ่าน Sidebar
+    return (
+      <DashboardPage 
+        session={session} 
+        onNavigate={(path) => setCurrentPage(path as any)} 
+      />
+    );
   };
 
   return (

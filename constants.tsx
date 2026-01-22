@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { School, Sport } from './types';
 
+export const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz39C9mFI9PgknFO-Kn8UkbaZu-ea6XUne7iVHdM5as6kmDXE95uPcPlf_Y7ffaMovQ/exec';
+
 export const SCHOOLS: School[] = [
   { id: '1', name: 'โรงเรียนบ้านตะเคียนช่างเหล็ก' },
   { id: '2', name: 'โรงเรียนบ้านกะกำ' },

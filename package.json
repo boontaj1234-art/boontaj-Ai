@@ -1,25 +1,22 @@
-
 {
-  "name": "tackien-lomsak-sports",
+  "name": "ระบบลงทะเบียนแข่งขันกีฬากลุ่มโรงเรียนตะเคียน–ลมศักดิ์",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "lucide-react": "^0.475.0",
-    "sweetalert2": "^11.10.5"
+    "react": "^19.2.3",
+    "lucide-react": "^0.562.0"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^4.2.1",
-    "typescript": "^5.3.3",
-    "vite": "^5.1.4"
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
   }
 }
