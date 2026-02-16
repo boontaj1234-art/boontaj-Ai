@@ -97,3 +97,16 @@ export interface CompetitionResult {
   certEndNo?: string;   // เลขที่เกียรติบัตรสิ้นสุด
   certTemplate?: string; // เทมเพลตเกียรติบัตร (Base64) - ยังคงไว้เพื่อความเข้ากันได้ แต่อาจไม่ได้ใช้จากจุดนี้
 }
+
+export interface FeedbackRecord {
+  id: string;
+  schoolId: string;
+  schoolName: string;
+  type: string;
+  subject: string;
+  details: string;
+  status: string;
+  timestamp: string;
+  reply?: string;
+  repliedAt?: string;
+}

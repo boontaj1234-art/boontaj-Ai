@@ -100,7 +100,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
             {loginType === 'admin' ? <ShieldCheck size={40} /> : <School size={40} />}
           </div>
           <h2 className="text-3xl font-black mb-1">
-            {loginType === 'admin' ? 'Admin Login' : 'ระบบลงทะเบียน'}
+            {loginType === 'admin' ? 'Admin Login' : 'ระบบลงทะเบียนการแข่งขันกีฬา'}
           </h2>
           <p className="text-white/70 text-sm font-medium">กลุ่มโรงเรียนตะเคียน-ลมศักดิ์</p>
         </div>

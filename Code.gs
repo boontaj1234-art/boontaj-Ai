@@ -61,6 +61,18 @@ function doGet(e) {
       return createJsonResponse(registered);
     }
 
+    if (action === 'getAllRegistrations') {
+      const sheet = getOrCreateSheet(ss, 'registrations');
+      const data = sheet.getDataRange().getValues();
+      const registrations = data.slice(1).map(r => ({
+        schoolId: String(r[0]).trim(),
+        schoolName: String(r[1]).trim(),
+        sportId: String(r[2]).trim(),
+        sportName: String(r[3]).trim()
+      }));
+      return createJsonResponse(registrations);
+    }
+
     if (action === 'getRegisteredSchoolsForEvent') {
       const sportId = String(e.parameter.sportId || '').trim();
       const ageGroup = String(e.parameter.ageGroup || '').trim().toLowerCase();
@@ -120,6 +132,21 @@ function doGet(e) {
       return createJsonResponse(results);
     }
 
+    if (action === 'getCertificatesIssued') {
+      const sheet = getOrCreateSheet(ss, 'certificates_issued');
+      const data = sheet.getDataRange().getValues();
+      return createJsonResponse(data.slice(1).map(r => ({
+        resultId: String(r[0]),
+        certNo: String(r[1]),
+        fullName: String(r[2]),
+        schoolName: String(r[3]),
+        rank: String(r[4]),
+        sportName: String(r[5]),
+        ageGroup: String(r[6]),
+        athleticsEvent: String(r[7])
+      })));
+    }
+
     if (action === 'getAthletes') {
       const sportId = String(e.parameter.sportId || '').trim();
       const schoolId = String(e.parameter.schoolId || '').trim();
@@ -174,6 +201,59 @@ function doGet(e) {
         }
       }
       return createJsonResponse(profile);
+    }
+
+    if (action === 'getFeedbacks') {
+      const sheet = getOrCreateSheet(ss, 'feedback');
+      const data = sheet.getDataRange().getValues();
+      const feedbacks = data.slice(1).map(r => ({
+        id: String(r[0]).trim(),
+        schoolId: String(r[1]).trim(),
+        schoolName: String(r[2]).trim(),
+        type: String(r[3]).trim(),
+        subject: String(r[4]).trim(),
+        details: String(r[5]).trim(),
+        status: String(r[6]).trim(),
+        timestamp: String(r[7]).trim(),
+        reply: String(r[8] || '').trim(),
+        repliedAt: String(r[9] || '').trim()
+      }));
+      return createJsonResponse(feedbacks);
+    }
+
+    if (action === 'getAnnouncementStats') {
+      const sports = getOrCreateSheet(ss, 'sportsname').getDataRange().getValues().slice(1);
+      // รวม No (r[1]) และ Name (r[2]) เข้าด้วยกันสำหรับกรีฑา
+      const athleticsEvents = getOrCreateSheet(ss, 'athletics_list').getDataRange().getValues().slice(1).map(r => {
+        const no = String(r[1] || '').trim();
+        const name = String(r[2] || '').trim();
+        return `${no} ${name}`.trim();
+      });
+      const stats = {};
+      
+      sports.forEach(s => {
+        const sportId = String(s[0]).trim();
+        const sportName = String(s[1]).trim();
+        const isAth = sportName.includes('กรีฑา');
+        
+        let items = [];
+        const sportSheet = ss.getSheetByName(sportName);
+        if (sportSheet) {
+          const data = sportSheet.getDataRange().getValues().slice(1);
+          if (isAth) {
+            items = athleticsEvents;
+          } else {
+            const uniqueAges = new Set();
+            data.forEach(r => {
+              const age = String(r[7] || '').trim();
+              if (age) uniqueAges.add(age);
+            });
+            items = Array.from(uniqueAges);
+          }
+        }
+        stats[sportId] = { count: items.length, items: items };
+      });
+      return createJsonResponse(stats);
     }
     
     return createJsonResponse({ status: 'error', message: 'Unknown action' });
@@ -402,6 +482,36 @@ function doPost(e) {
       return createJsonResponse({ status: 'error', message: 'Result ID not found' });
     }
 
+    if (action === 'submitFeedback') {
+      const sheet = getOrCreateSheet(ss, 'feedback');
+      const timestamp = new Date();
+      const id = "FB-" + timestamp.getTime();
+      sheet.appendRow([
+        id, d.schoolId, d.schoolName, d.type, d.subject, d.details, 'รอดำเนินการ', timestamp
+      ]);
+      return createJsonResponse({ status: 'success' });
+    }
+
+    if (action === 'updateFeedback') {
+      const sheet = getOrCreateSheet(ss, 'feedback');
+      const data = sheet.getDataRange().getValues();
+      const id = String(d.id).trim();
+      let foundRow = -1;
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][0]).trim() === id) {
+          foundRow = i + 1;
+          break;
+        }
+      }
+      if (foundRow !== -1) {
+        sheet.getRange(foundRow, 7).setValue(d.status);
+        sheet.getRange(foundRow, 9).setValue(d.reply || '');
+        sheet.getRange(foundRow, 10).setValue(new Date());
+        return createJsonResponse({ status: 'success' });
+      }
+      return createJsonResponse({ status: 'error', message: 'Feedback ID not found' });
+    }
+
     if (action === 'deleteResult') {
       deleteRowById(ss, 'results', d.id);
       return createJsonResponse({ status: 'success' });
@@ -564,6 +674,9 @@ function getOrCreateSheet(ss, name) {
     } else if (name === 'certificates_issued') {
       sheet.appendRow(['resultId', 'เลขที่เกียรติบัตร', 'ชื่อ-นามสกุล', 'โรงเรียน', 'อันดับ', 'กีฬา', 'รุ่นอายุ', 'รายการกรีฑา', 'บันทึกเมื่อ']);
       sheet.getRange(1, 1, 1, 9).setBackground('#f43f5e').setFontColor('#ffffff').setFontWeight('bold');
+    } else if (name === 'feedback') {
+      sheet.appendRow(['id', 'schoolId', 'schoolName', 'type', 'subject', 'details', 'status', 'timestamp', 'reply', 'repliedAt']);
+      sheet.getRange(1, 1, 1, 10).setBackground('#8b5cf6').setFontColor('#ffffff').setFontWeight('bold');
     }
   }
   return sheet;
@@ -611,13 +724,14 @@ function deleteRowsByColumnValue(ss, sheetName, colIndex, value) {
 }
 
 function updateColumnValueByCriteria(ss, sheetName, searchColIndex, searchValue, updateColIndex, newValue) {
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return;
-  const data = sheet.getDataRange().getValues();
+  const sheet = ss.getSheetByName(searchColIndex >= 0 ? sheetName : ''); // placeholder for complex renmaing logic
+  const targetSheet = ss.getSheetByName(sheetName);
+  if (!targetSheet) return;
+  const data = targetSheet.getDataRange().getValues();
   const sVal = String(searchValue).trim();
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][searchColIndex]).trim() === sVal) {
-      sheet.getRange(i + 1, updateColIndex + 1).setValue(newValue);
+      targetSheet.getRange(i + 1, updateColIndex + 1).setValue(newValue);
     }
   }
 }

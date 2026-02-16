@@ -1,7 +1,6 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { SCRIPT_URL } from '../constants';
-import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete } from '../types';
+import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete, FeedbackRecord } from '../types';
 import { 
   Users, 
   Trophy, 
@@ -41,24 +40,63 @@ import {
   Zap,
   Key,
   FileDown,
-  FileUp
+  FileUp,
+  MessageSquare,
+  Reply,
+  LayoutDashboard,
+  BarChart3,
+  Clock,
+  ChevronUp,
+  Target,
+  TrophyIcon,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 
 declare var Swal: any;
 
+interface MedalStanding {
+  schoolId: string;
+  schoolName: string;
+  gold: number;
+  silver: number;
+  bronze: number;
+  total: number;
+}
+
+interface RegistrationSummary {
+  schoolId: string;
+  schoolName: string;
+  sportId: string;
+  sportName: string;
+}
+
+interface AnnouncementStat {
+  count: number;
+  items: string[];
+}
+
 const AdminPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'accounts' | 'ageGroups' | 'sportTypes' | 'athletics' | 'results' | 'certificates'>('accounts');
+  const [activeTab, setActiveTab] = useState<'overview' | 'accounts' | 'ageGroups' | 'sportTypes' | 'athletics' | 'results' | 'certificates' | 'feedback-view'>('overview');
   const [schools, setSchools] = useState<School[]>([]);
   const [ageGroups, setAgeGroups] = useState<AgeGroup[]>([]);
   const [sportTypes, setSportTypes] = useState<SportType[]>([]);
   const [athleticsList, setAthleticsList] = useState<AthleticsEvent[]>([]);
   const [resultsList, setResultsList] = useState<CompetitionResult[]>([]);
+  const [feedbackList, setFeedbackList] = useState<FeedbackRecord[]>([]);
+  const [allRegistrations, setAllRegistrations] = useState<RegistrationSummary[]>([]);
+  const [announcementStats, setAnnouncementStats] = useState<Record<string, AnnouncementStat>>({});
   
+  const [selectedSchoolForMedals, setSelectedSchoolForMedals] = useState<MedalStanding | null>(null);
+
   const [editingSchool, setEditingSchool] = useState<School | null>(null);
   const [editingAgeGroup, setEditingAgeGroup] = useState<AgeGroup | null>(null);
   const [editingSportType, setEditingSportType] = useState<SportType | null>(null);
   const [editingAthletics, setEditingAthletics] = useState<AthleticsEvent | null>(null);
   const [editingResult, setEditingResult] = useState<Partial<CompetitionResult> | null>(null);
+  const [replyingFeedback, setReplyingFeedback] = useState<FeedbackRecord | null>(null);
+  const [replyText, setReplyText] = useState('');
+  const [replyStatus, setReplyStatus] = useState('');
   
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -66,14 +104,14 @@ const AdminPage: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSavingCert, setIsSavingCert] = useState<string | null>(null);
+  
+  const [showProgressDetails, setShowProgressDetails] = useState<string | null>(null);
 
-  // สำหรับการอัปโหลดเทมเพลต
   const templateInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const [currentSportForTemplate, setCurrentSportForTemplate] = useState<string | null>(null);
   const [currentSportForPdf, setCurrentSportForPdf] = useState<string | null>(null);
 
-  // สำหรับหน้าจัดการผลการแข่งขัน
   const [resSportId, setResSportId] = useState('');
   const [resAgeGroup, setResAgeGroup] = useState('');
   const [resAthEvent, setResAthEvent] = useState('');
@@ -83,12 +121,15 @@ const AdminPage: React.FC = () => {
   const fetchData = async () => {
     if (!isRefreshing) setIsLoading(true);
     try {
-      const [accRes, ageRes, sportRes, athleticsRes, resultsRes] = await Promise.all([
+      const [accRes, ageRes, sportRes, athleticsRes, resultsRes, feedbackRes, regRes, statsRes] = await Promise.all([
         fetch(`${SCRIPT_URL}?action=getAccounts`),
         fetch(`${SCRIPT_URL}?action=getAgeGroups`),
         fetch(`${SCRIPT_URL}?action=getSports`),
         fetch(`${SCRIPT_URL}?action=getAthleticsList`),
-        fetch(`${SCRIPT_URL}?action=getResults`)
+        fetch(`${SCRIPT_URL}?action=getResults`),
+        fetch(`${SCRIPT_URL}?action=getFeedbacks`),
+        fetch(`${SCRIPT_URL}?action=getAllRegistrations`),
+        fetch(`${SCRIPT_URL}?action=getAnnouncementStats`)
       ]);
       
       const accData = await accRes.json();
@@ -96,6 +137,9 @@ const AdminPage: React.FC = () => {
       const sportData = await sportRes.json();
       const athleticsData = await athleticsRes.json();
       const resultsData = await resultsRes.json();
+      const feedbackData = await feedbackRes.json();
+      const regData = await regRes.json();
+      const statsData = await statsRes.json();
       
       const mappedSchools = Object.keys(accData).map(id => ({ 
         id: String(id).trim(), 
@@ -108,6 +152,9 @@ const AdminPage: React.FC = () => {
       setAgeGroups(Array.isArray(ageData) ? ageData : []);
       setSportTypes(Array.isArray(sportData) ? sportData : []);
       setResultsList(Array.isArray(resultsData) ? resultsData : []);
+      setFeedbackList(Array.isArray(feedbackData) ? feedbackData : []);
+      setAllRegistrations(Array.isArray(regData) ? regData : []);
+      setAnnouncementStats(statsData || {});
       
       const sortedAthletics = Array.isArray(athleticsData) ? [...athleticsData].sort((a, b) => a.eventNo.localeCompare(b.eventNo)) : [];
       setAthleticsList(sortedAthletics);
@@ -116,7 +163,7 @@ const AdminPage: React.FC = () => {
       Swal.fire({
         icon: 'error',
         title: 'การเชื่อมต่อล้มเหลว',
-        text: 'ไม่สามารถดึงข้อมูลได้ กรุณาตรวจสอบการ Deploy Apps Script'
+        text: 'ไม่สามารถดึงข้อมูลได้ กรุณาลองใหม่ภายหลัง'
       });
     } finally {
       setIsLoading(false);
@@ -331,12 +378,18 @@ const AdminPage: React.FC = () => {
 
   const handleSportTemplateUpload = (sportId: string) => {
     setCurrentSportForTemplate(sportId);
-    templateInputRef.current?.click();
+    if (templateInputRef.current) {
+        templateInputRef.current.value = '';
+        templateInputRef.current.click();
+    }
   };
 
   const handleSportPdfUpload = (sportId: string) => {
     setCurrentSportForPdf(sportId);
-    pdfInputRef.current?.click();
+    if (pdfInputRef.current) {
+        pdfInputRef.current.value = '';
+        pdfInputRef.current.click();
+    }
   };
 
   const onTemplateFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -393,7 +446,6 @@ const AdminPage: React.FC = () => {
     }
   };
 
-  // บันทึกชนิดกีฬา
   const handleSaveSportType = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingSportType) return;
@@ -402,7 +454,6 @@ const AdminPage: React.FC = () => {
     if (success) setEditingSportType(null);
   };
 
-  // บันทึกบัญชีผู้ใช้
   const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingSchool) return;
@@ -411,7 +462,6 @@ const AdminPage: React.FC = () => {
     if (success) setEditingSchool(null);
   };
 
-  // บันทึกรุ่นอายุ
   const handleSaveAgeGroup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAgeGroup) return;
@@ -420,7 +470,6 @@ const AdminPage: React.FC = () => {
     if (success) setEditingAgeGroup(null);
   };
 
-  // บันทึกรายการกรีฑา
   const handleSaveAthletics = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAthletics) return;
@@ -456,6 +505,21 @@ const AdminPage: React.FC = () => {
     }
   };
 
+  const handleSaveReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!replyingFeedback) return;
+    Swal.fire({ title: 'กำลังบันทึกคำตอบ...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    const success = await handlePostRequest({ 
+      action: 'updateFeedback', 
+      data: { id: replyingFeedback.id, status: replyStatus, reply: replyText } 
+    });
+    if (success) {
+      setReplyingFeedback(null);
+      setReplyText('');
+      setReplyStatus('');
+    }
+  };
+
   const handleDeleteItem = async (action: string, id: string, name: string) => {
     let confirmText = `ต้องการลบข้อมูล "${name}" ใช่หรือไม่?`;
     if (action === 'deleteAccount') {
@@ -475,6 +539,135 @@ const AdminPage: React.FC = () => {
       Swal.fire({ title: 'กำลังลบ...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
       await handlePostRequest({ action, data: { id, name } });
     }
+  };
+
+  const calculateMedalStandings = (): MedalStanding[] => {
+    const standingsMap: Record<string, MedalStanding> = {};
+    
+    // เริ่มต้นใส่ทุกโรงเรียนที่มีในระบบเข้าไปใน Map เพื่อให้แสดงผลแม้ไม่มีเหรียญ
+    schools.forEach(school => {
+      standingsMap[school.id] = { 
+        schoolId: school.id, 
+        schoolName: school.name, 
+        gold: 0, 
+        silver: 0, 
+        bronze: 0, 
+        total: 0 
+      };
+    });
+
+    resultsList.filter(r => r.isPublished).forEach(res => {
+      const addMedal = (id: string, name: string, type: 'gold' | 'silver' | 'bronze') => {
+        if (!id || !name) return;
+        if (!standingsMap[id]) {
+          standingsMap[id] = { schoolId: id, schoolName: name, gold: 0, silver: 0, bronze: 0, total: 0 };
+        }
+        standingsMap[id][type] += 1;
+        standingsMap[id].total += 1;
+      };
+
+      addMedal(res.rank1SchoolId, res.rank1SchoolName, 'gold');
+      addMedal(res.rank2SchoolId, res.rank2SchoolName, 'silver');
+      addMedal(res.rank3SchoolId, res.rank3SchoolName, 'bronze');
+    });
+
+    return Object.values(standingsMap).sort((a, b) => {
+      if (b.gold !== a.gold) return b.gold - a.gold;
+      if (b.silver !== a.silver) return b.silver - a.silver;
+      if (b.bronze !== a.bronze) return b.bronze - a.bronze;
+      return b.total - a.total;
+    });
+  };
+
+  const handleExportAllStandingsToExcel = () => {
+    const standings = calculateMedalStandings();
+    if (standings.length === 0) return;
+
+    let csvContent = "\uFEFF"; 
+    csvContent += "ตารางสรุปเหรียญรางวัลรวม (Admin),กลุ่มโรงเรียนตะเคียน-ลมศักดิ์\n";
+    csvContent += `รายงานวันที่,${new Date().toLocaleDateString('th-TH')}\n\n`;
+    csvContent += "อันดับ,โรงเรียน,เหรียญทอง,เหรียญเงิน,เหรียญทองแดง,เหรียญรวมทั้งหมด\n";
+
+    standings.forEach((school, idx) => {
+      csvContent += `${idx + 1},${school.schoolName},${school.gold},${school.silver},${school.bronze},${school.total}\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Admin_สรุปเหรียญรางวัลรวม_${new Date().getTime()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportMedalsToExcel = () => {
+    if (!selectedSchoolForMedals) return;
+
+    const schoolMedals = resultsList.filter(r => r.isPublished && (
+      r.rank1SchoolId === selectedSchoolForMedals.schoolId || 
+      r.rank2SchoolId === selectedSchoolForMedals.schoolId || 
+      r.rank3SchoolId === selectedSchoolForMedals.schoolId
+    )).map(r => ({
+      sportName: r.sportName,
+      ageGroup: r.ageGroup,
+      athleticsEvent: r.athleticsEvent || '-',
+      rank: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'ชนะเลิศ' : 
+            r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 1' : 'รองชนะเลิศอันดับ 2',
+      medalType: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'ทอง' : 
+                r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'เงิน' : 'ทองแดง'
+    }));
+
+    let csvContent = "\uFEFF";
+    csvContent += "รายงานความสำเร็จรายโรงเรียน (Admin)\n";
+    csvContent += `โรงเรียน,${selectedSchoolForMedals.schoolName}\n`;
+    csvContent += `ทอง,${selectedSchoolForMedals.gold},เงิน,${selectedSchoolForMedals.silver},ทองแดง,${selectedSchoolForMedals.bronze},รวม,${selectedSchoolForMedals.total}\n\n`;
+    csvContent += "ลำดับ,กีฬา,รุ่นอายุ,รายการ,อันดับ,เหรียญรางวัล\n";
+
+    schoolMedals.forEach((m, idx) => {
+      csvContent += `${idx + 1},${m.sportName},${m.ageGroup},${m.athleticsEvent},${m.rank},${m.medalType}\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Admin_สรุปเหรียญ_${selectedSchoolForMedals.schoolName}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportSportMedalsToExcel = (sportId: string, sportName: string) => {
+    const sportResults = resultsList.filter(r => r.sportId === sportId && r.isPublished);
+    
+    if (sportResults.length === 0) {
+      Swal.fire('ไม่มีข้อมูล', 'ยังไม่มีการประกาศผลที่เผยแพร่สำหรับกีฬานี้', 'info');
+      return;
+    }
+
+    let csvContent = "\uFEFF";
+    csvContent += `รายงานสรุปผลการแข่งขันและเหรียญรางวัล - ${sportName},กลุ่มโรงเรียนตะเคียน-ลมศักดิ์\n`;
+    csvContent += `ข้อมูล ณ วันที่,${new Date().toLocaleDateString('th-TH')}\n\n`;
+    csvContent += "รุ่นอายุ/รายการแข่งขัน,ชนะเลิศ (ทอง),รองชนะเลิศอันดับ 1 (เงิน),รองชนะเลิศอันดับ 2 (ทองแดง)\n";
+
+    sportResults.forEach(res => {
+      const category = res.athleticsEvent ? `${res.ageGroup} (${res.athleticsEvent})` : res.ageGroup;
+      csvContent += `${category},${res.rank1SchoolName || '-'},${res.rank2SchoolName || '-'},${res.rank3SchoolName || '-'}\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Admin_สรุปผล_${sportName}_${new Date().getTime()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handlePrintCertificates = async (result: CompetitionResult, rank: 1 | 2 | 3 | 'all') => {
@@ -511,8 +704,6 @@ const AdminPage: React.FC = () => {
 
       const certsHtml = printData.map(group => group.athletes.map((ath, idx) => {
           const certNo = formatCertNo(result.certStartNo || '', group.globalOffset + idx);
-          
-          // ตัดเลขลำดับรายการกรีฑาออก (เช่น "001 วิ่ง 40 เมตร ชาย" -> "วิ่ง 40 เมตร ชาย")
           const cleanAthleticsEvent = result.athleticsEvent ? result.athleticsEvent.replace(/^\d+\s+/, '') : '';
           const eventName = cleanAthleticsEvent ? `${result.sportName} (${cleanAthleticsEvent})` : result.sportName;
           
@@ -529,7 +720,6 @@ const AdminPage: React.FC = () => {
                     <div class="event-text">ประเภทกีฬา ${eventName} รุ่น${result.ageGroup}</div>
                   </div>
                 </div>
-                <div class="signature-section" style="${bgTemplate ? 'visibility: hidden;' : ''}"><div class="signature-block"></div></div>
               </div>
             </div>
           `;
@@ -552,8 +742,6 @@ const AdminPage: React.FC = () => {
               .school-name { font-size: 18pt; font-weight: bold; color: #334155; margin-bottom: 20px; }
               .achievement-text { font-size: 18pt; color: #334155; font-weight: bold; }
               .event-text { font-size: 18pt; color: #334155; font-weight: bold; }
-              .header-section { height: 100px; position: relative; width: 100%; }
-              .signature-section { height: 120px; margin-top: 10px; }
             </style>
           </head>
           <body>
@@ -572,6 +760,109 @@ const AdminPage: React.FC = () => {
     }
   };
 
+  const renderMedalDetailsModal = () => {
+    if (!selectedSchoolForMedals) return null;
+
+    const schoolMedals = resultsList.filter(r => r.isPublished && (
+      r.rank1SchoolId === selectedSchoolForMedals.schoolId || 
+      r.rank2SchoolId === selectedSchoolForMedals.schoolId || 
+      r.rank3SchoolId === selectedSchoolForMedals.schoolId
+    )).map(r => ({
+      ...r,
+      type: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'gold' : 
+            r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'silver' : 'bronze'
+    }));
+
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
+        <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+          <div className="p-8 bg-slate-900 text-white flex justify-between items-center relative overflow-hidden">
+            <div className="relative z-10">
+              <h3 className="text-2xl font-black">{selectedSchoolForMedals.schoolName}</h3>
+              <p className="text-white/80 text-xs font-bold uppercase tracking-widest mt-1">รายละเอียดความสำเร็จรายโรงเรียน</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleExportMedalsToExcel}
+                className="relative z-20 p-2.5 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-all active:scale-95"
+                title="ส่งออกเป็นไฟล์ Excel"
+              >
+                <FileDown size={20} />
+              </button>
+              <button onClick={() => setSelectedSchoolForMedals(null)} className="relative z-20 p-2 hover:bg-white/20 rounded-xl transition-colors">
+                <X size={24} />
+              </button>
+            </div>
+            <Medal className="absolute right-[-20px] bottom-[-20px] w-48 h-48 text-white/5 rotate-12" />
+          </div>
+          
+          <div className="p-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
+            <div className="grid grid-cols-3 gap-4 mb-8">
+              <div className="bg-yellow-50 p-4 rounded-3xl border border-yellow-100 text-center">
+                <Medal size={24} className="text-yellow-500 mx-auto mb-2" />
+                <p className="text-[10px] font-black text-yellow-600 uppercase tracking-widest">เหรียญทอง</p>
+                <p className="text-2xl font-black text-yellow-700">{selectedSchoolForMedals.gold}</p>
+              </div>
+              <div className="bg-slate-50 p-4 rounded-3xl border border-slate-100 text-center">
+                <Medal size={24} className="text-slate-400 mx-auto mb-2" />
+                <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">เหรียญเงิน</p>
+                <p className="text-2xl font-black text-slate-700">{selectedSchoolForMedals.silver}</p>
+              </div>
+              <div className="bg-orange-50 p-4 rounded-3xl border border-orange-100 text-center">
+                <Medal size={24} className="text-orange-600 mx-auto mb-2" />
+                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">เหรียญทองแดง</p>
+                <p className="text-2xl font-black text-orange-700">{selectedSchoolForMedals.bronze}</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {schoolMedals.length === 0 ? (
+                <div className="text-center py-12 bg-slate-50 rounded-[2rem] border-2 border-dashed border-slate-100">
+                  <p className="text-slate-400 font-bold">ยังไม่มีข้อมูลเหรียญรางวัล</p>
+                </div>
+              ) : (
+                schoolMedals.map((medal, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-5 bg-white border border-slate-100 rounded-3xl hover:border-blue-200 transition-all shadow-sm">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
+                        medal.type === 'gold' ? 'bg-yellow-100 text-yellow-600' : 
+                        medal.type === 'silver' ? 'bg-slate-100 text-slate-500' : 'bg-orange-100 text-orange-600'
+                      }`}>
+                        <Medal size={24} />
+                      </div>
+                      <div>
+                        <p className="font-black text-slate-800 text-sm">{medal.sportName}</p>
+                        <p className="text-[10px] font-bold text-slate-400">{medal.ageGroup} {medal.athleticsEvent ? `• ${medal.athleticsEvent}` : ''}</p>
+                      </div>
+                    </div>
+                    <div className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase ${
+                      medal.type === 'gold' ? 'bg-yellow-500 text-white' : 
+                      medal.type === 'silver' ? 'bg-slate-400 text-white' : 'bg-orange-600 text-white'
+                    }`}>
+                      {medal.type === 'gold' ? 'ทอง' : medal.type === 'silver' ? 'เงิน' : 'ทองแดง'}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="p-6 bg-slate-50 text-center flex items-center justify-center gap-4">
+             <button 
+              onClick={handleExportMedalsToExcel} 
+              className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-black text-sm flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 active:scale-95"
+             >
+                <FileDown size={18} />
+                ส่งออก Excel
+             </button>
+             <button onClick={() => setSelectedSchoolForMedals(null)} className="px-8 py-3 bg-white border border-slate-200 rounded-2xl font-black text-sm text-slate-600 hover:bg-slate-100 transition-all active:scale-95 shadow-sm">
+                ปิดหน้าต่าง
+             </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const filteredSchools = schools.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredAgeGroups = ageGroups.filter(a => a.age.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredSportTypes = sportTypes.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -580,6 +871,11 @@ const AdminPage: React.FC = () => {
     r.sportName.toLowerCase().includes(searchTerm.toLowerCase()) || 
     (r.athleticsEvent && r.athleticsEvent.toLowerCase().includes(searchTerm.toLowerCase())) ||
     r.ageGroup.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+  const filteredFeedback = feedbackList.filter(f => 
+    f.schoolName.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    f.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    f.type.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const getLatestGlobalCertNo = () => {
@@ -591,6 +887,43 @@ const AdminPage: React.FC = () => {
 
   const isAthletics = sportTypes.find(s => s.id === resSportId)?.name.includes('กรีฑา');
 
+  // Calculate announcement progress based on announcementStats
+  const sportProgressData = sportTypes.map(sport => {
+    const sportId = sport.id;
+    const sportResults = resultsList.filter(r => r.sportId === sportId);
+    const isAth = sport.name.includes('กรีฑา');
+
+    const stat = announcementStats[sportId] || { count: 0, items: [] };
+    const totalExpected = stat.count;
+    const expectedItems = stat.items;
+    
+    // Find results for this sport in resultsList
+    const sportRecords = resultsList.filter(r => r.sportId === sportId);
+
+    let publishedCount = 0;
+    let publishedLabels: string[] = [];
+
+    if (isAth) {
+      const publishedEventsSet = new Set<string>(sportRecords.filter(r => r.isPublished).map(r => r.athleticsEvent));
+      publishedLabels = Array.from(publishedEventsSet);
+      publishedCount = publishedLabels.length;
+    } else {
+      const publishedAgesSet = new Set<string>(sportRecords.filter(r => r.isPublished).map(r => r.ageGroup));
+      publishedLabels = Array.from(publishedAgesSet);
+      publishedCount = publishedLabels.length;
+    }
+
+    const percentage = totalExpected > 0 ? (publishedCount / totalExpected) * 100 : 0;
+    
+    return {
+      ...sport,
+      totalExpected,
+      publishedCount,
+      percentage,
+      sportRecords // สรุปรายการทั้งหมดที่มีในฐานข้อมูล
+    };
+  });
+
   if (isLoading) return (
     <div className="flex flex-col items-center justify-center py-32">
       <Loader2 className="animate-spin text-blue-600 mb-4" size={48} />
@@ -599,7 +932,10 @@ const AdminPage: React.FC = () => {
   );
 
   return (
-    <div className="flex flex-col lg:flex-row gap-8 max-w-7xl mx-auto animate-in fade-in duration-500 pb-20">
+    <div className="flex flex-col lg:flex-row gap-8 min-h-screen max-w-7xl mx-auto animate-in fade-in duration-500 pb-20">
+      <input type="file" ref={templateInputRef} onChange={onTemplateFileChange} accept="image/*" className="hidden" />
+      <input type="file" ref={pdfInputRef} onChange={onPdfFileChange} accept="application/pdf" className="hidden" />
+
       <aside className="lg:w-72 flex-shrink-0">
         <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden sticky top-24">
           <div className="p-8 border-b border-slate-50 bg-slate-50/50">
@@ -610,12 +946,14 @@ const AdminPage: React.FC = () => {
           </div>
           <nav className="p-4 space-y-2">
             {[
+              { id: 'overview', label: 'ภาพรวมระบบ', icon: <LayoutDashboard size={20} />, color: 'blue' },
               { id: 'accounts', label: 'จัดการบัญชีโรงเรียน', icon: <Users size={20} />, color: 'blue' },
               { id: 'ageGroups', label: 'จัดการรุ่นอายุ/เพศ', icon: <Trophy size={20} />, color: 'indigo' },
               { id: 'sportTypes', label: 'จัดการประเภทกีฬา', icon: <Dribbble size={20} />, color: 'emerald' },
               { id: 'athletics', label: 'จัดการรายการกรีฑา', icon: <PersonStanding size={20} />, color: 'orange' },
               { id: 'results', label: 'จัดการผลการแข่งขัน', icon: <Award size={20} />, color: 'amber' },
               { id: 'certificates', label: 'จัดการเกียรติบัตร', icon: <ScrollText size={20} />, color: 'rose' },
+              { id: 'feedback-view', label: 'ดูข้อเสนอแนะ', icon: <MessageSquare size={20} />, color: 'violet' },
             ].map((item) => (
               <button
                 key={item.id}
@@ -638,21 +976,26 @@ const AdminPage: React.FC = () => {
       </aside>
 
       <div className="flex-grow space-y-6">
+        {renderMedalDetailsModal()}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white/50 p-4 rounded-3xl backdrop-blur-sm border border-white">
           <h2 className="text-2xl font-black text-slate-800 px-2">
-            {activeTab === 'accounts' ? 'บัญชีผู้ใช้งาน' : 
+            {activeTab === 'overview' ? 'ภาพรวมการแข่งขัน' :
+             activeTab === 'accounts' ? 'บัญชีผู้ใช้งาน' : 
              activeTab === 'ageGroups' ? 'รุ่นอายุและเพศ' : 
              activeTab === 'sportTypes' ? 'รายการชนิดกีฬา' : 
              activeTab === 'athletics' ? 'รายการกรีฑา' : 
-             activeTab === 'results' ? 'ผลการแข่งขัน' : 'จัดการออกเกียรติบัตร'}
+             activeTab === 'results' ? 'จัดการผลการแข่งขัน' : 
+             activeTab === 'certificates' ? 'จัดการออกเกียรติบัตร' : 'รายการข้อเสนอแนะ'}
           </h2>
           <div className="flex items-center gap-2 w-full sm:w-auto">
-            <div className="relative flex-grow sm:flex-grow-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <input type="text" placeholder="ค้นหา..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm w-full outline-none focus:ring-2 focus:ring-blue-500 transition-all shadow-sm" />
-            </div>
+            {activeTab !== 'overview' && (
+              <div className="relative flex-grow sm:flex-grow-0">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input type="text" placeholder="ค้นหา..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm w-full outline-none focus:ring-2 focus:ring-blue-500 transition-all shadow-sm" />
+              </div>
+            )}
             <button onClick={handleRefresh} className={`p-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 shadow-sm transition-all ${isRefreshing ? 'animate-spin text-blue-600' : 'text-slate-400'}`}><RefreshCw size={20} /></button>
-            {activeTab !== 'certificates' && (
+            {activeTab !== 'certificates' && activeTab !== 'feedback-view' && activeTab !== 'overview' && (
               <button 
                 onClick={() => {
                   setIsAddingNew(true);
@@ -674,6 +1017,291 @@ const AdminPage: React.FC = () => {
             )}
           </div>
         </div>
+
+        {activeTab === 'overview' && (
+           <div className="space-y-6 animate-in fade-in duration-500">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">โรงเรียนทั้งหมด</p>
+                    <p className="text-2xl font-black text-slate-800">{schools.length} แห่ง</p>
+                 </div>
+                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">รายการกีฬา</p>
+                    <p className="text-2xl font-black text-slate-800">{sportTypes.length} ชนิด</p>
+                 </div>
+                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">ผลการแข่งขัน</p>
+                    <p className="text-2xl font-black text-slate-800">{resultsList.filter(r => r.isPublished).length} รายการ</p>
+                 </div>
+                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">ข้อเสนอแนะ</p>
+                    <p className="text-2xl font-black text-slate-800">{feedbackList.length} เรื่อง</p>
+                 </div>
+              </div>
+
+              <div className="bg-white rounded-[2.5rem] p-8 md:p-10 shadow-xl border border-slate-100 overflow-hidden">
+                 <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-amber-500 text-white rounded-2xl shadow-lg shadow-amber-200"><BarChart3 size={24} /></div>
+                      <div>
+                        <h3 className="text-2xl font-black text-slate-800">ตารางสรุปเหรียญรางวัลรวม</h3>
+                        <p className="text-slate-400 text-sm font-bold mt-0.5 uppercase tracking-widest">Global Medal Standings</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={handleExportAllStandingsToExcel}
+                      className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-2xl font-black text-xs hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 active:scale-95"
+                    >
+                      <FileDown size={18} />
+                      ส่งออก Excel
+                    </button>
+                 </div>
+
+                 {calculateMedalStandings().length === 0 ? (
+                   <div className="py-20 text-center border-2 border-dashed border-slate-100 rounded-[2rem]">
+                      <Trophy className="mx-auto text-slate-200 mb-4" size={56} />
+                      <p className="text-slate-400 font-bold max-w-xs mx-auto">ยังไม่มีข้อมูลเหรียญรางวัลที่ถูกเผยแพร่</p>
+                   </div>
+                 ) : (
+                   <div className="overflow-x-auto rounded-[2rem] border border-slate-100 shadow-inner">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest">
+                          <tr>
+                            <th className="px-8 py-5 w-20 text-center">อันดับ</th>
+                            <th className="px-8 py-5">โรงเรียน</th>
+                            <th className="px-8 py-5 text-center bg-yellow-500/10">
+                              <div className="flex flex-col items-center gap-1">
+                                 <Medal size={16} className="text-yellow-500" />
+                                 <span>ทอง</span>
+                              </div>
+                            </th>
+                            <th className="px-8 py-5 text-center bg-slate-400/10">
+                              <div className="flex flex-col items-center gap-1">
+                                 <Medal size={16} className="text-slate-400" />
+                                 <span>เงิน</span>
+                              </div>
+                            </th>
+                            <th className="px-8 py-5 text-center bg-amber-600/10">
+                              <div className="flex flex-col items-center gap-1">
+                                 <Medal size={16} className="text-amber-600" />
+                                 <span>ทองแดง</span>
+                              </div>
+                            </th>
+                            <th className="px-8 py-5 text-center bg-blue-600/10">
+                              <div className="flex flex-col items-center gap-1">
+                                 <CheckCircle2 size={16} className="text-blue-600" />
+                                 <span>รวม</span>
+                              </div>
+                            </th>
+                            <th className="px-8 py-5 text-center">จัดการ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {calculateMedalStandings().map((school, idx) => (
+                            <tr 
+                              key={school.schoolId} 
+                              onClick={() => setSelectedSchoolForMedals(school)}
+                              className="hover:bg-amber-50/40 transition-all cursor-pointer group"
+                            >
+                              <td className="px-8 py-5 text-center font-black text-slate-400">{idx + 1}</td>
+                              <td className="px-8 py-5 font-black text-slate-800 text-sm">{school.schoolName}</td>
+                              <td className="px-8 py-5 text-center font-black text-slate-700 text-lg">{school.gold}</td>
+                              <td className="px-8 py-5 text-center font-black text-slate-700 text-lg">{school.silver}</td>
+                              <td className="px-8 py-5 text-center font-black text-slate-700 text-lg">{school.bronze}</td>
+                              <td className="px-8 py-5 text-center font-black text-blue-600 text-xl">{school.total}</td>
+                              <td className="px-8 py-5 text-center">
+                                 <div className="p-2 bg-slate-100 text-slate-400 rounded-xl group-hover:bg-amber-500 group-hover:text-white transition-all shadow-sm">
+                                    <Eye size={18} />
+                                 </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                   </div>
+                 )}
+              </div>
+           </div>
+        )}
+
+        {activeTab === 'results' && (
+          <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+             <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border border-slate-100 overflow-hidden">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-amber-600 text-white rounded-xl shadow-md"><Target size={20} /></div>
+                    <div>
+                        <h3 className="text-xl font-black text-slate-800">ความก้าวหน้าการประกาศผลรายชนิดกีฬา</h3>
+                        <p className="text-slate-400 text-xs font-bold mt-0.5">บริหารจัดการการแสดงผลให้โรงเรียนเห็นได้จากส่วนนี้</p>
+                    </div>
+                  </div>
+                  <div className="bg-blue-50 px-4 py-2 rounded-2xl border border-blue-100 flex items-center gap-2">
+                     <TrophyIcon size={16} className="text-blue-600" />
+                     <span className="text-[10px] font-black text-blue-800 uppercase tracking-widest">การประกาศผลและเหรียญรางวัล</span>
+                  </div>
+                </div>
+
+                {sportProgressData.length === 0 ? (
+                  <div className="py-20 text-center border-2 border-dashed border-slate-100 rounded-[2rem]">
+                    <AlertCircle className="mx-auto text-slate-200 mb-4" size={56} />
+                    <p className="text-slate-400 font-bold max-w-xs mx-auto">กำลังเตรียมข้อมูลรายการแข่งขัน...</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                    {sportProgressData.map((s) => (
+                        <div key={s.id} className="bg-slate-50 border border-slate-200 rounded-3xl p-6 hover:border-blue-400 transition-all group relative overflow-hidden">
+                          <div className="flex justify-between items-start mb-4 relative z-10">
+                              <div className="max-w-[180px]">
+                                <h4 className="font-black text-slate-800 text-base leading-tight truncate">{s.name}</h4>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase mt-1 tracking-wider">
+                                  เผยแพร่แล้ว {s.publishedCount} / {s.totalExpected} รายการ
+                                </p>
+                              </div>
+                              <div className="flex flex-col items-end gap-2">
+                                <span className={`px-2 py-1 rounded-lg text-[10px] font-black ${s.percentage >= 100 && s.totalExpected > 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
+                                  {s.totalExpected > 0 ? s.percentage.toFixed(0) : 0}%
+                                </span>
+                                <button 
+                                  onClick={() => handleExportSportMedalsToExcel(s.id, s.name)}
+                                  className="p-1.5 bg-white border border-slate-200 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-all shadow-sm"
+                                  title="ส่งออกรายงานสรุปเหรียญ"
+                                >
+                                  <FileDown size={14} />
+                                </button>
+                              </div>
+                          </div>
+                          
+                          <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden mb-6 shadow-inner relative z-10">
+                              <div 
+                                className={`h-full transition-all duration-1000 ${s.percentage >= 100 && s.totalExpected > 0 ? 'bg-emerald-50 shadow-lg shadow-emerald-100' : 'bg-blue-500 shadow-lg shadow-blue-100'}`} 
+                                style={{ width: `${s.totalExpected > 0 ? Math.min(s.percentage, 100) : 0}%` }}
+                              />
+                          </div>
+
+                          <button 
+                              onClick={() => setShowProgressDetails(showProgressDetails === s.id ? null : s.id)}
+                              className="w-full py-2.5 bg-white border border-slate-200 rounded-xl text-[10px] font-black text-slate-500 hover:text-blue-600 flex items-center justify-center gap-2 group-hover:bg-blue-50 transition-all relative z-10"
+                          >
+                              {showProgressDetails === s.id ? <><ChevronUp size={14} /> ซ่อนรายละเอียด</> : <><Info size={14} /> ดูและจัดการการเผยแพร่</>}
+                          </button>
+
+                          {showProgressDetails === s.id && (
+                              <div className="mt-4 pt-4 border-t border-slate-200 space-y-4 animate-in fade-in slide-in-from-top-2 relative z-10">
+                                {s.sportRecords && s.sportRecords.length > 0 ? (
+                                   <div className="space-y-3">
+                                      {s.sportRecords.map((rec: CompetitionResult) => (
+                                        <div key={rec.id} className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between group/rec hover:border-amber-200 transition-colors">
+                                           <div className="flex-grow min-w-0">
+                                              <p className="text-[11px] font-black text-slate-800 leading-tight truncate">{rec.ageGroup}</p>
+                                              {rec.athleticsEvent && (
+                                                <p className="text-[9px] font-bold text-slate-400 mt-0.5 truncate">{rec.athleticsEvent}</p>
+                                              )}
+                                           </div>
+                                           <div className="flex items-center gap-3 ml-4 flex-shrink-0">
+                                              <label className="flex items-center gap-2 cursor-pointer group/toggle">
+                                                <div 
+                                                  onClick={() => handleTogglePublish(rec)}
+                                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all ${
+                                                    rec.isPublished 
+                                                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                                                      : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-emerald-300 hover:text-emerald-500'
+                                                  }`}
+                                                >
+                                                  {rec.isPublished ? <CheckSquare size={14} /> : <Square size={14} />}
+                                                  <span className="text-[9px] font-black uppercase tracking-widest">แสดงให้โรงเรียนเห็น</span>
+                                                </div>
+                                              </label>
+                                           </div>
+                                        </div>
+                                      ))}
+                                   </div>
+                                ) : (
+                                   <div className="bg-slate-100 p-4 rounded-xl text-center">
+                                      <AlertCircle size={20} className="mx-auto text-slate-300 mb-1" />
+                                      <p className="text-[10px] font-black text-slate-400 uppercase">ไม่พบผลการแข่งขันที่บันทึกไว้</p>
+                                   </div>
+                                )}
+                              </div>
+                          )}
+                          <Dribbble className="absolute right-[-20px] bottom-[-20px] w-32 h-32 text-slate-100/30 -rotate-12 group-hover:text-blue-50 transition-colors" />
+                        </div>
+                    ))}
+                  </div>
+                )}
+             </div>
+          </div>
+        )}
+
+        {activeTab === 'feedback-view' && (
+          <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden animate-in slide-in-from-bottom-4">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 border-b text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    <th className="px-8 py-5">วันเวลา</th>
+                    <th className="px-8 py-5">โรงเรียน</th>
+                    <th className="px-8 py-5">สถานะ</th>
+                    <th className="px-8 py-5">หัวข้อ / รายละเอียด</th>
+                    <th className="px-8 py-5 text-center">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredFeedback.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-8 py-20 text-center">
+                        <MessageSquare className="mx-auto text-slate-200 mb-4" size={48} />
+                        <p className="text-slate-400 font-bold">ไม่พบรายการข้อเสนอแนะ</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredFeedback.map(fb => (
+                      <tr key={fb.id} className="hover:bg-violet-50/30 transition-all">
+                        <td className="px-8 py-5 text-xs text-slate-400 font-medium">
+                          {new Date(fb.timestamp).toLocaleString('th-TH')}
+                        </td>
+                        <td className="px-8 py-5 font-black text-slate-800 text-sm">
+                          {fb.schoolName}
+                        </td>
+                        <td className="px-8 py-5">
+                          <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
+                            fb.status === 'เสร็จสิ้น' || fb.status === 'แก้ไขแล้ว' ? 'bg-emerald-100 text-emerald-600' : 
+                            fb.status === 'รอดำเนินการ' ? 'bg-amber-100 text-amber-600' : 
+                            fb.status === 'ไม่สามารถดำเนินการได้' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                          }`}>
+                            {fb.status}
+                          </span>
+                        </td>
+                        <td className="px-8 py-5">
+                          <div className="font-bold text-slate-900 text-sm mb-1">{fb.subject}</div>
+                          <div className="text-xs text-slate-500 leading-relaxed max-w-md line-clamp-2">{fb.details}</div>
+                          {fb.reply && (
+                            <div className="mt-2 p-2 bg-slate-50 rounded-lg border-l-2 border-violet-400 flex items-start gap-2">
+                              <Reply size={12} className="text-violet-500 mt-1" />
+                              <div className="text-[10px] text-slate-600 italic">ตอบกลับ: {fb.reply}</div>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-8 py-5 text-center">
+                          <button 
+                            onClick={() => {
+                              setReplyingFeedback(fb);
+                              setReplyText(fb.reply || '');
+                              setReplyStatus(fb.status);
+                            }}
+                            className="p-2 bg-violet-100 text-violet-600 hover:bg-violet-600 hover:text-white rounded-xl transition-all shadow-sm"
+                            title="จัดการและตอบกลับ"
+                          >
+                            <MessageSquare size={18} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {activeTab === 'certificates' && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 animate-in slide-in-from-top-4">
@@ -712,178 +1340,203 @@ const AdminPage: React.FC = () => {
           </div>
         )}
 
-        <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="text-slate-500 text-[10px] uppercase font-black border-b bg-slate-50/50">
-                <th className="px-8 py-5 w-32 text-center">{activeTab === 'results' || activeTab === 'certificates' ? 'กีฬา' : 'ที่'}</th>
-                <th className="px-8 py-5">{activeTab === 'results' || activeTab === 'certificates' ? 'รุ่น / รายการ' : 'ชื่อรายการ'}</th>
-                <th className="px-8 py-5">
-                  {activeTab === 'sportTypes' ? 'เอกสาร/เทมเพลต' : (activeTab === 'certificates' ? 'กำหนดเลขที่เกียรติบัตร' : (activeTab === 'results' ? 'สรุปผู้ชนะ' : 'รายละเอียด'))}
-                </th>
-                <th className="px-8 py-5 text-center">จัดการ</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {activeTab === 'accounts' && filteredSchools.map((s) => (
-                <tr key={s.id} className="hover:bg-blue-50/20 transition-all">
-                  <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
-                  <td className="px-8 py-5 font-bold text-slate-800">{s.name}</td>
-                  <td className="px-8 py-5 font-mono text-xs text-slate-500">User: {s.username} | Pass: {s.password}</td>
-                  <td className="px-8 py-5 text-center flex justify-center gap-2">
-                    <button onClick={() => { setEditingSchool(s); setIsAddingNew(false); }} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg"><Edit2 size={18} /></button>
-                    <button onClick={() => handleDeleteItem('deleteAccount', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
-                  </td>
+        {activeTab !== 'feedback-view' && activeTab !== 'overview' && (
+          <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-slate-500 text-[10px] uppercase font-black border-b bg-slate-50/50">
+                  <th className="px-8 py-5 w-32 text-center">{activeTab === 'results' || activeTab === 'certificates' ? 'กีฬา' : 'ที่'}</th>
+                  <th className="px-8 py-5">{activeTab === 'results' || activeTab === 'certificates' ? 'รุ่น / รายการ' : 'ชื่อรายการ'}</th>
+                  <th className="px-8 py-5">
+                    {activeTab === 'sportTypes' ? 'เอกสาร/เทมเพลต' : (activeTab === 'certificates' ? 'กำหนดเลขที่เกียรติบัตร' : (activeTab === 'results' ? 'สรุปผู้ชนะ' : 'รายละเอียด'))}
+                  </th>
+                  <th className="px-8 py-5 text-center">จัดการ</th>
                 </tr>
-              ))}
-              {activeTab === 'sportTypes' && filteredSportTypes.map((s) => (
-                <tr key={s.id} className="hover:bg-emerald-50/20 transition-all">
-                  <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
-                  <td className="px-8 py-5">
-                    <div className="font-bold text-slate-800">{s.name}</div>
-                    <div className="text-[10px] text-slate-400 truncate max-w-[200px]">{s.description || '-'}</div>
-                  </td>
-                  <td className="px-8 py-5">
-                    <div className="flex flex-col gap-3">
-                      {/* อัปโหลดเทมเพลตเกียรติบัตร */}
-                      <div className="flex items-center gap-3">
-                        <div 
-                          onClick={() => handleSportTemplateUpload(s.id)}
-                          className={`w-10 h-10 rounded-lg border-2 border-dashed flex items-center justify-center cursor-pointer transition-all overflow-hidden relative group/tpl ${s.certTemplate ? 'border-emerald-300 shadow-sm' : 'border-slate-200 bg-slate-50 hover:border-emerald-400'}`}
-                        >
-                          {s.certTemplate ? (
-                            <>
-                              <img src={s.certTemplate} className="w-full h-full object-cover" alt="Template" />
-                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/tpl:opacity-100 flex items-center justify-center transition-opacity">
-                                <ImageIcon size={14} className="text-white" />
-                              </div>
-                            </>
-                          ) : (
-                            <ImageIcon size={18} className="text-slate-300 group-hover:scale-110 transition-transform" />
-                          )}
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {activeTab === 'accounts' && filteredSchools.map((s) => (
+                  <tr key={s.id} className="hover:bg-blue-50/20 transition-all">
+                    <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
+                    <td className="px-8 py-5 font-bold text-slate-800">{s.name}</td>
+                    <td className="px-8 py-5 font-mono text-xs text-slate-500">User: {s.username} | Pass: {s.password}</td>
+                    <td className="px-8 py-5 text-center flex justify-center gap-2">
+                      <button onClick={() => { setEditingSchool(s); setIsAddingNew(false); }} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteItem('deleteAccount', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
+                    </td>
+                  </tr>
+                ))}
+                {activeTab === 'sportTypes' && filteredSportTypes.map((s) => (
+                  <tr key={s.id} className="hover:bg-emerald-50/20 transition-all">
+                    <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
+                    <td className="px-8 py-5">
+                      <div className="font-bold text-slate-800">{s.name}</div>
+                      <div className="text-[10px] text-slate-400 truncate max-w-[200px]">{s.description || '-'}</div>
+                    </td>
+                    <td className="px-8 py-5">
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center gap-3">
+                          <div 
+                            onClick={() => handleSportTemplateUpload(s.id)}
+                            className={`w-10 h-10 rounded-lg border-2 border-dashed flex items-center justify-center cursor-pointer transition-all overflow-hidden relative group/tpl ${s.certTemplate ? 'border-emerald-300 shadow-sm' : 'border-slate-200 bg-slate-50 hover:border-emerald-400'}`}
+                          >
+                            {s.certTemplate ? (
+                              <>
+                                <img src={s.certTemplate} className="w-full h-full object-cover" alt="Template" />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/tpl:opacity-100 flex items-center justify-center transition-opacity">
+                                  <ImageIcon size={14} className="text-white" />
+                                </div>
+                              </>
+                            ) : (
+                              <ImageIcon size={18} className="text-slate-300 group-hover:scale-110 transition-transform" />
+                            )}
+                          </div>
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">เทมเพลตเกียรติบัตร</span>
                         </div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">เทมเพลตเกียรติบัตร</span>
-                      </div>
-
-                      {/* อัปโหลด PDF ระเบียบการ */}
-                      <div className="flex items-center gap-3">
-                        <div 
-                          onClick={() => handleSportPdfUpload(s.id)}
-                          className={`w-10 h-10 rounded-lg border-2 border-dashed flex items-center justify-center cursor-pointer transition-all overflow-hidden relative group/pdf ${s.rulesPdf ? 'border-blue-300 bg-blue-50 shadow-sm' : 'border-slate-200 bg-slate-50 hover:border-blue-400'}`}
-                        >
-                          {s.rulesPdf ? (
-                            <FileDown size={20} className="text-blue-600" />
-                          ) : (
-                            <FileUp size={20} className="text-slate-300 group-hover:scale-110 transition-transform" />
-                          )}
-                        </div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ระเบียบการ (PDF)</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-8 py-5 text-center flex justify-center gap-2">
-                    <button onClick={() => { setEditingSportType(s); setIsAddingNew(false); }} className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-lg"><Edit2 size={18} /></button>
-                    <button onClick={() => handleDeleteItem('deleteSport', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
-                  </td>
-                </tr>
-              ))}
-              {activeTab === 'ageGroups' && filteredAgeGroups.map((a) => (
-                <tr key={a.id} className="hover:bg-indigo-50/20 transition-all">
-                  <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
-                  <td className="px-8 py-5 font-bold text-slate-800">{a.age}</td>
-                  <td className="px-8 py-5"><span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-black">{a.gender}</span></td>
-                  <td className="px-8 py-5 text-center flex justify-center gap-2">
-                    <button onClick={() => { setEditingAgeGroup(a); setIsAddingNew(false); }} className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg"><Edit2 size={18} /></button>
-                    <button onClick={() => handleDeleteItem('deleteAgeGroup', a.id, a.age)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
-                  </td>
-                </tr>
-              ))}
-              {activeTab === 'athletics' && filteredAthletics.map((s) => (
-                <tr key={s.id} className="hover:bg-orange-50/20 transition-all">
-                  <td className="px-8 py-5 font-black text-orange-600 bg-orange-50/50 text-center">{s.eventNo}</td>
-                  <td className="px-8 py-5 font-bold text-slate-800">{s.name}</td>
-                  <td className="px-8 py-5 text-xs text-slate-500 truncate max-w-xs">{s.description || '-'}</td>
-                  <td className="px-8 py-5 text-center flex justify-center gap-2">
-                    <button onClick={() => { setEditingAthletics(s); setIsAddingNew(false); }} className="p-2 text-orange-600 hover:bg-orange-100 rounded-lg"><Edit2 size={18} /></button>
-                    <button onClick={() => handleDeleteItem('deleteAthletics', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
-                  </td>
-                </tr>
-              ))}
-              {activeTab === 'results' && filteredResults.map((r) => (
-                <tr key={r.id} className="hover:bg-amber-50/20 transition-all">
-                  <td className="px-8 py-5 font-black text-amber-600 bg-amber-50/50 text-center">{r.sportName}</td>
-                  <td className="px-8 py-5">
-                    <div className="font-bold text-slate-800">{r.ageGroup || 'ทุกรุ่นอายุ'}</div>
-                    {r.athleticsEvent && <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{r.athleticsEvent}</div>}
-                  </td>
-                  <td className="px-8 py-5">
-                    <div className="flex items-center gap-2 font-black text-amber-600"><Medal size={16} className="text-yellow-500" /> {r.rank1SchoolName || '-'}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">2: {r.rank2SchoolName || '-'} | 3: {r.rank3SchoolName || '-'}</div>
-                  </td>
-                  <td className="px-8 py-5 text-center flex justify-center gap-2">
-                    <button onClick={() => { setEditingResult(r); setIsAddingNew(false); setResSportId(r.sportId); setResAgeGroup(r.ageGroup || ''); setResAthEvent(r.athleticsEvent || ''); }} className="p-2 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors"><Edit2 size={18} /></button>
-                    <button onClick={() => handleDeleteItem('deleteResult', r.id, `${r.sportName} ${r.ageGroup}`)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={18} /></button>
-                  </td>
-                </tr>
-              ))}
-              {activeTab === 'certificates' && filteredResults.map((r) => (
-                <tr key={r.id} className="hover:bg-rose-50/20 transition-all group">
-                  <td className="px-8 py-5 font-black text-rose-600 bg-rose-50/50 text-center">{r.sportName}</td>
-                  <td className="px-8 py-5">
-                    <div className="font-bold text-slate-800 text-sm">{r.ageGroup}</div>
-                    {r.athleticsEvent && <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{r.athleticsEvent}</div>}
-                    <div className="mt-2">
-                      <label className="flex items-center gap-2 cursor-pointer w-fit group/pub">
-                        <input type="checkbox" checked={r.isPublished} onChange={() => handleTogglePublish(r)} className="rounded border-slate-300 text-rose-600 focus:ring-rose-500/20" />
-                        <span className="text-[9px] font-black uppercase text-slate-400 group-hover/pub:text-rose-500 transition-colors">แสดงให้โรงเรียนเห็น</span>
-                      </label>
-                    </div>
-                  </td>
-                  <td className="px-8 py-5">
-                    <div className="flex flex-col gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="w-32">
-                          <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">เลขที่เริ่มต้น</label>
-                          <input type="text" placeholder="001/2568" value={r.certStartNo || ''} onChange={(e) => handleUpdateCertFieldLocally(r, 'certStartNo', e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-bold outline-none focus:ring-2 focus:ring-rose-500/20 group-hover:bg-white transition-all" />
-                        </div>
-                        <div className="pt-4">
-                          <button onClick={() => handleSaveCertConfig(r)} disabled={isSavingCert === r.id} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black transition-all active:scale-95 ${isSavingCert === r.id ? 'bg-slate-100 text-slate-400' : 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white shadow-sm'}`}>
-                            {isSavingCert === r.id ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                            บันทึกค่า
-                          </button>
+                        <div className="flex items-center gap-3">
+                          <div 
+                            onClick={() => handleSportPdfUpload(s.id)}
+                            className={`w-10 h-10 rounded-lg border-2 border-dashed flex items-center justify-center cursor-pointer transition-all overflow-hidden relative group/pdf ${s.rulesPdf ? 'border-blue-300 bg-blue-50 shadow-sm' : 'border-slate-200 bg-slate-50 hover:border-blue-400'}`}
+                          >
+                            {s.rulesPdf ? (
+                              <FileDown size={20} className="text-blue-600" />
+                            ) : (
+                              <FileUp size={20} className="text-slate-300 group-hover:scale-110 transition-transform" />
+                            )}
+                          </div>
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ระเบียบการ (PDF)</span>
                         </div>
                       </div>
-                      
-                      {r.certEndNo && (
-                        <div className="bg-rose-50/50 border border-rose-100 rounded-xl px-4 py-2 flex items-center justify-between group-hover:bg-white transition-all">
-                           <div className="flex items-center gap-2">
-                              <CheckCircle2 size={12} className="text-rose-500" />
-                              <span className="text-[9px] font-black text-rose-700 uppercase tracking-widest">เลขลำดับสุดท้าย:</span>
-                           </div>
-                           <span className="text-xs font-black text-rose-600">{r.certEndNo}</span>
+                    </td>
+                    <td className="px-8 py-5 text-center flex justify-center gap-2">
+                      <button onClick={() => { setEditingSportType(s); setIsAddingNew(false); }} className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-lg"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteItem('deleteSport', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
+                    </td>
+                  </tr>
+                ))}
+                {activeTab === 'ageGroups' && filteredAgeGroups.map((a) => (
+                  <tr key={a.id} className="hover:bg-indigo-50/20 transition-all">
+                    <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
+                    <td className="px-8 py-5 font-bold text-slate-800">{a.age}</td>
+                    <td className="px-8 py-5"><span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-black">{a.gender}</span></td>
+                    <td className="px-8 py-5 text-center flex justify-center gap-2">
+                      <button onClick={() => { setEditingAgeGroup(a); setIsAddingNew(false); }} className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteItem('deleteAgeGroup', a.id, a.age)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
+                    </td>
+                  </tr>
+                ))}
+                {activeTab === 'athletics' && filteredAthletics.map((s) => (
+                  <tr key={s.id} className="hover:bg-orange-50/20 transition-all">
+                    <td className="px-8 py-5 font-black text-orange-600 bg-orange-50/50 text-center">{s.eventNo}</td>
+                    <td className="px-8 py-5 font-bold text-slate-800">{s.name}</td>
+                    <td className="px-8 py-5 text-xs text-slate-500 truncate max-w-xs">{s.description || '-'}</td>
+                    <td className="px-8 py-5 text-center flex justify-center gap-2">
+                      <button onClick={() => { setEditingAthletics(s); setIsAddingNew(false); }} className="p-2 text-orange-600 hover:bg-orange-100 rounded-lg"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteItem('deleteAthletics', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
+                    </td>
+                  </tr>
+                ))}
+                {activeTab === 'results' && filteredResults.map((r) => (
+                  <tr key={r.id} className="hover:bg-amber-50/20 transition-all">
+                    <td className="px-8 py-5 font-black text-amber-600 bg-amber-50/50 text-center">{r.sportName}</td>
+                    <td className="px-8 py-5">
+                      <div className="font-bold text-slate-800">{r.ageGroup || 'ทุกรุ่นอายุ'}</div>
+                      {r.athleticsEvent && <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{r.athleticsEvent}</div>}
+                    </td>
+                    <td className="px-8 py-5">
+                      <div className="flex items-center gap-2 font-black text-amber-600"><Medal size={16} className="text-yellow-500" /> {r.rank1SchoolName || '-'}</div>
+                      <div className="text-[10px] text-slate-400 mt-1">2: {r.rank2SchoolName || '-'} | 3: {r.rank3SchoolName || '-'}</div>
+                    </td>
+                    <td className="px-8 py-5 text-center flex justify-center gap-2">
+                      <button onClick={() => { setEditingResult(r); setIsAddingNew(false); setResSportId(r.sportId); setResAgeGroup(r.ageGroup || ''); setResAthEvent(r.athleticsEvent || ''); }} className="p-2 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteItem('deleteResult', r.id, `${r.sportName} ${r.ageGroup}`)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={18} /></button>
+                    </td>
+                  </tr>
+                ))}
+                {activeTab === 'certificates' && filteredResults.map((r) => (
+                  <tr key={r.id} className="hover:bg-rose-50/20 transition-all group">
+                    <td className="px-8 py-5 font-black text-rose-600 bg-rose-50/50 text-center">{r.sportName}</td>
+                    <td className="px-8 py-5">
+                      <div className="font-bold text-slate-800 text-sm">{r.ageGroup}</div>
+                      {r.athleticsEvent && <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{r.athleticsEvent}</div>}
+                    </td>
+                    <td className="px-8 py-5">
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-32">
+                            <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">เลขที่เริ่มต้น</label>
+                            <input type="text" placeholder="001/2568" value={r.certStartNo || ''} onChange={(e) => handleUpdateCertFieldLocally(r, 'certStartNo', e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-bold outline-none focus:ring-2 focus:ring-rose-500/20 group-hover:bg-white transition-all" />
+                          </div>
+                          <div className="pt-4">
+                            <button onClick={() => handleSaveCertConfig(r)} disabled={isSavingCert === r.id} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black transition-all active:scale-95 ${isSavingCert === r.id ? 'bg-slate-100 text-slate-400' : 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white shadow-sm'}`}>
+                              {isSavingCert === r.id ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                              บันทึกค่า
+                            </button>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-8 py-5 text-center">
-                    <div className="flex flex-col gap-2">
-                       <button onClick={() => handlePrintCertificates(r, 'all')} className="w-full py-2.5 bg-rose-600 text-white rounded-xl font-black text-[10px] flex items-center justify-center gap-2 shadow-lg hover:bg-rose-700 active:scale-95 transition-all"><PrinterCheck size={14} /> พิมพ์ทั้งหมด</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                        {r.certEndNo && (
+                          <div className="bg-rose-50/50 border border-rose-100 rounded-xl px-4 py-2 flex items-center justify-between group-hover:bg-white transition-all">
+                             <div className="flex items-center gap-2">
+                                <CheckCircle2 size={12} className="text-rose-500" />
+                                <span className="text-[9px] font-black text-rose-700 uppercase tracking-widest">เลขลำดับสุดท้าย:</span>
+                             </div>
+                             <span className="text-xs font-black text-rose-600">{r.certEndNo}</span>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-8 py-5 text-center">
+                      <div className="flex flex-col gap-2">
+                         <button onClick={() => handlePrintCertificates(r, 'all')} className="w-full py-2.5 bg-rose-600 text-white rounded-xl font-black text-[10px] flex items-center justify-center gap-2 shadow-lg hover:bg-rose-700 active:scale-95 transition-all"><PrinterCheck size={14} /> พิมพ์ทั้งหมด</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      <input type="file" ref={templateInputRef} onChange={onTemplateFileChange} accept="image/*" className="hidden" />
-      <input type="file" ref={pdfInputRef} onChange={onPdfFileChange} accept="application/pdf" className="hidden" />
+      {replyingFeedback && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
+          <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
+            <div className="p-8 bg-violet-600 text-white flex justify-between items-center">
+              <div>
+                <h4 className="font-black text-2xl">ตอบกลับข้อเสนอแนะ</h4>
+                <p className="text-white/70 text-xs font-bold uppercase tracking-widest mt-1">Feedback Management</p>
+              </div>
+              <button onClick={() => setReplyingFeedback(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={28} /></button>
+            </div>
+            <form onSubmit={handleSaveReply} className="p-8 space-y-6">
+              <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">ข้อความต้นฉบับ จาก {replyingFeedback.schoolName}</p>
+                <p className="text-sm font-bold text-slate-800 mb-1">{replyingFeedback.subject}</p>
+                <p className="text-xs text-slate-500 leading-relaxed">{replyingFeedback.details}</p>
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">อัปเดตสถานะ</label>
+                <select required value={replyStatus} onChange={(e) => setReplyStatus(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-violet-500/10 transition-all cursor-pointer">
+                  <option value="รอดำเนินการ">รอดำเนินการ</option>
+                  <option value="กำลังดำเนินการ">กำลังดำเนินการ</option>
+                  <option value="เสร็จสิ้น">แก้ไขแล้ว / เสร็จสิ้น</option>
+                  <option value="ไม่สามารถดำเนินการได้">ไม่สามารถดำเนินการได้ (พร้อมเหตุผล)</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ข้อความตอบกลับไปยังโรงเรียน</label>
+                <textarea required value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="ตอบกลับความคืบหน้า..." className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl h-32 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-violet-500/10 transition-all resize-none" />
+              </div>
+              <button type="submit" className="w-full py-5 bg-violet-600 text-white rounded-2xl font-black shadow-xl shadow-violet-100 flex items-center justify-center gap-2 hover:bg-violet-700 transition-all active:scale-95">
+                <Save size={20} /> บันทึกและส่งคำตอบ
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
-      {/* Account Modal */}
       {editingSchool && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
+          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
             <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-blue-600' : 'bg-blue-800'}`}>
               <h4 className="font-black text-2xl">จัดการบัญชีโรงเรียน</h4>
               <button onClick={() => setEditingSchool(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
@@ -910,7 +1563,7 @@ const AdminPage: React.FC = () => {
                   <input type="text" required value={editingSchool.password} onChange={(e) => setEditingSchool({...editingSchool, password: e.target.value})} className="w-full pl-12 pr-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" placeholder="password สำหรับเข้าสู่ระบบ" />
                 </div>
               </div>
-              <button type="submit" className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black shadow-xl shadow-blue-100 flex items-center justify-center gap-2 hover:bg-blue-700 transition-all active:scale-95">
+              <button type="submit" className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black shadow-xl shadow-blue-100 flex items-center justify-center gap-3 hover:bg-blue-700 transition-all active:scale-95">
                 <Save size={20} /> บันทึกข้อมูลบัญชี
               </button>
             </form>
@@ -918,10 +1571,9 @@ const AdminPage: React.FC = () => {
         </div>
       )}
 
-      {/* Age Group Modal */}
       {editingAgeGroup && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
+          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
             <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-indigo-600' : 'bg-indigo-800'}`}>
               <h4 className="font-black text-2xl">จัดการรุ่นอายุและเพศ</h4>
               <button onClick={() => setEditingAgeGroup(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
@@ -947,10 +1599,9 @@ const AdminPage: React.FC = () => {
         </div>
       )}
 
-      {/* Sport Type Modal */}
       {editingSportType && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
+          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
             <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-emerald-600' : 'bg-emerald-800'}`}>
               <h4 className="font-black text-2xl">จัดการชนิดกีฬา</h4>
               <button onClick={() => setEditingSportType(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
@@ -972,10 +1623,9 @@ const AdminPage: React.FC = () => {
         </div>
       )}
 
-      {/* Athletics Modal */}
       {editingAthletics && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
+          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
             <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-orange-600' : 'bg-orange-800'}`}>
               <h4 className="font-black text-2xl">จัดการรายการกรีฑา</h4>
               <button onClick={() => setEditingAthletics(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
@@ -1001,7 +1651,6 @@ const AdminPage: React.FC = () => {
         </div>
       )}
 
-      {/* Competition Result Modal */}
       {editingResult && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
           <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 my-8">
@@ -1074,7 +1723,7 @@ const AdminPage: React.FC = () => {
                       </div>
                       <div>
                         <label className="text-[10px] font-black text-orange-400 flex items-center gap-1 mb-2 px-1 uppercase tracking-widest"><Medal size={12} className="text-orange-400" /> รองชนะเลิศอันดับ 2 (อันดับ 3)</label>
-                        <select value={editingResult.rank3SchoolId} onChange={(e) => setEditingResult({...editingResult, rank3SchoolId: e.target.value})} className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-slate-500/10 transition-all">
+                        <select value={editingResult.rank3SchoolId} onChange={(e) => setEditingResult({...editingResult, rank3SchoolId: e.target.value})} className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all">
                           <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
                           {resRegisteredSchools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                         </select>
@@ -1083,18 +1732,7 @@ const AdminPage: React.FC = () => {
                   )}
                 </div>
               </div>
-              <div className="bg-slate-50 rounded-3xl p-6 mb-8 border border-slate-100 flex items-start gap-4">
-                <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl shrink-0"><AlertCircle size={24} /></div>
-                <div>
-                  <h6 className="text-sm font-black text-slate-800 mb-1">คำแนะนำการกรอกข้อมูล</h6>
-                  <p className="text-xs text-slate-500 leading-relaxed">กรุณาตรวจสอบรายชื่อโรงเรียนที่ชนะเลิศให้ถูกต้อง ระบบจะใช้ข้อมูลนี้ในการสร้างเกียรติบัตรให้กับนักกีฬาของโรงเรียนนั้นๆ โดยอัตโนมัติหลังจากบันทึกผลการแข่งขันแล้ว</p>
-                </div>
-              </div>
-              <button 
-                type="submit" 
-                disabled={!resSportId || !resAgeGroup || !editingResult.rank1SchoolId}
-                className="w-full py-5 bg-slate-900 text-white rounded-[1.5rem] font-black shadow-xl shadow-slate-200 flex items-center justify-center gap-3 hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100"
-              >
+              <button type="submit" disabled={!resSportId || !resAgeGroup || !editingResult.rank1SchoolId} className="w-full py-5 bg-slate-900 text-white rounded-[1.5rem] font-black shadow-xl shadow-slate-200 flex items-center justify-center gap-3 hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100">
                 <Save size={24} /> บันทึกผลการแข่งขัน
               </button>
             </form>
