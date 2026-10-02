@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ICON_MAP, SCRIPT_URL } from '../constants';
 import { Sport, Athlete, AgeGroup, SchoolProfile, AthleticsEvent } from '../types';
 import { 
@@ -22,7 +22,11 @@ import {
   UserCheck,
   FileText,
   Trash2,
-  AlertTriangle
+  AlertTriangle,
+  ClipboardList,
+  Info,
+  Layers,
+  ChevronRight
 } from 'lucide-react';
 
 declare var Swal: any;
@@ -31,6 +35,13 @@ interface RegistrationPageProps {
   onBack: () => void;
   schoolName: string;
   schoolId: string;
+}
+
+interface RegisteredCategorySummary {
+  ageGroup: string;
+  athleticsEvent: string;
+  athleteCount: number;
+  athletes: Athlete[];
 }
 
 const PREFIXES_ATHLETE = ['เด็กชาย', 'เด็กหญิง', 'นาย', 'นางสาว'];
@@ -65,6 +76,10 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
   const [hasSavedData, setHasSavedData] = useState(false);
   const [genderMismatch, setGenderMismatch] = useState(false);
   
+  // ข้อมูลนักกีฬาทั้งหมดที่เคยลงทะเบียนไว้ในประเภทกีฬานี้
+  const [allAthletesInCurrentSport, setAllAthletesInCurrentSport] = useState<Athlete[]>([]);
+  const [isLoadingAllSportAthletes, setIsLoadingAllSportAthletes] = useState(false);
+
   const [maxAthletes, setMaxAthletes] = useState(12);
   const [maxCoaches, setMaxCoaches] = useState(3);
   const [athletes, setAthletes] = useState<Athlete[]>([]);
@@ -119,6 +134,37 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
     fetchData();
   }, [schoolId]);
 
+  // สรุปรายการกีฬาและรุ่นอายุที่ลงทะเบียนแล้วในประเภทนี้
+  const registeredCategories = useMemo<RegisteredCategorySummary[]>(() => {
+    if (!selectedSportForAthletes || allAthletesInCurrentSport.length === 0) return [];
+    const isAthletics = selectedSportForAthletes.name.includes('กรีฑา');
+    const map = new Map<string, RegisteredCategorySummary>();
+
+    allAthletesInCurrentSport.forEach(ath => {
+      const age = (ath.ageGroup || '').trim();
+      const ev = (ath.athleticsEvent || '').trim();
+      if (!age) return;
+      const key = isAthletics ? `${age}___${ev}` : age;
+
+      if (!map.has(key)) {
+        map.set(key, {
+          ageGroup: age,
+          athleticsEvent: ev,
+          athleteCount: 0,
+          athletes: []
+        });
+      }
+      const entry = map.get(key)!;
+      entry.athleteCount += 1;
+      entry.athletes.push(ath);
+    });
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.ageGroup !== b.ageGroup) return a.ageGroup.localeCompare(b.ageGroup);
+      return a.athleticsEvent.localeCompare(b.athleticsEvent);
+    });
+  }, [selectedSportForAthletes, allAthletesInCurrentSport]);
+
   // ตรวจสอบความสอดคล้องของเพศ
   useEffect(() => {
     if (globalAgeGroup && selectedAthleticsEvent && selectedSportForAthletes?.name.includes('กรีฑา')) {
@@ -141,6 +187,74 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
     sport.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  // ดึงข้อมูลนักกีฬาทั้งหมดในประเภทกีฬานี้ของโรงเรียน เพื่อใช้แสดงสถานะและตรวจสอบซ้ำ
+  const fetchAllAthletesInSport = async (sportId: string) => {
+    setIsLoadingAllSportAthletes(true);
+    try {
+      const res = await fetch(`${SCRIPT_URL}?action=getAthletes&schoolId=${schoolId}&sportId=${sportId}`);
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setAllAthletesInCurrentSport(data);
+        return data;
+      }
+      setAllAthletesInCurrentSport([]);
+      return [];
+    } catch (e) {
+      console.error('Failed to fetch all athletes in sport:', e);
+      setAllAthletesInCurrentSport([]);
+      return [];
+    } finally {
+      setIsLoadingAllSportAthletes(false);
+    }
+  };
+
+  const getExistingAthletesForCategory = (ageGroup: string, athleticsEvent: string, athleteList: Athlete[] = allAthletesInCurrentSport) => {
+    const isAthletics = selectedSportForAthletes?.name.includes('กรีฑา');
+    return athleteList.filter(a => {
+      const matchAge = (a.ageGroup || '').trim() === (ageGroup || '').trim();
+      if (isAthletics) {
+        return matchAge && (a.athleticsEvent || '').trim() === (athleticsEvent || '').trim();
+      }
+      return matchAge;
+    });
+  };
+
+  const isCurrentCategoryRegistered = (ageGroup: string, athleticsEvent: string, athleteList: Athlete[] = allAthletesInCurrentSport) => {
+    return getExistingAthletesForCategory(ageGroup, athleticsEvent, athleteList).length > 0;
+  };
+
+  const checkAndWarnDuplicate = (ageGroup: string, eventValue: string, athleteList: Athlete[] = allAthletesInCurrentSport) => {
+    if (!ageGroup) return;
+    const existing = getExistingAthletesForCategory(ageGroup, eventValue, athleteList);
+    if (existing.length > 0) {
+      const Toast = Swal.mixin({
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 3500,
+        timerProgressBar: true,
+        didOpen: (toast: any) => {
+          toast.addEventListener('mouseenter', Swal.stopTimer);
+          toast.addEventListener('mouseleave', Swal.resumeTimer);
+        }
+      });
+      Toast.fire({
+        icon: 'info',
+        title: 'รายการนี้เคยลงทะเบียนไว้แล้ว',
+        text: `พบข้อมูลนักกีฬา ${existing.length} คนในระบบ (บันทึกเพื่ออัปเดตข้อมูลเดิม)`
+      });
+    }
+  };
+
+  const handleSelectRegisteredCategory = async (age: string, event: string) => {
+    setGlobalAgeGroup(age);
+    setSelectedAthleticsEvent(event);
+    if (!selectedSportForAthletes) return;
+    const newMax = calculateMaxAthletes(selectedSportForAthletes.name, age, event);
+    setMaxAthletes(newMax);
+    fetchAthleteData(age, event, newMax);
+  };
+
   const handleGlobalAgeGroupChange = async (value: string) => {
     setGlobalAgeGroup(value);
     if (!selectedSportForAthletes) return;
@@ -156,11 +270,13 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
            resetToEmpty(newMax, value);
            return;
         }
+        checkAndWarnDuplicate(value, selectedAthleticsEvent);
         fetchAthleteData(value, selectedAthleticsEvent, newMax);
       } else {
         resetToEmpty(newMax, value);
       }
     } else if (value) {
+      checkAndWarnDuplicate(value, '');
       fetchAthleteData(value, '', newMax);
     } else {
       resetToEmpty(newMax, value);
@@ -179,6 +295,7 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
          resetToEmpty(newMax, globalAgeGroup);
          return;
       }
+      checkAndWarnDuplicate(globalAgeGroup, eventValue);
       fetchAthleteData(globalAgeGroup, eventValue, newMax);
     } else {
       resetToEmpty(newMax, globalAgeGroup);
@@ -320,6 +437,9 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
                 })
             });
             resetToEmpty(maxAthletes, globalAgeGroup);
+            if (selectedSportForAthletes?.id) {
+              await fetchAllAthletesInSport(selectedSportForAthletes.id);
+            }
             Swal.fire({ icon: 'success', title: 'ลบข้อมูลเรียบร้อยแล้ว', timer: 1500, showConfirmButton: false });
         } catch (err) {
             Swal.fire('ผิดพลาด', 'ไม่สามารถลบข้อมูลได้', 'error');
@@ -348,12 +468,18 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
     setMaxCoaches(needsTwoCoaches ? 2 : 3);
     
     try {
+      // ดึงข้อมูลนักกีฬาทั้งหมดในกีฬานี้เพื่อแสดงสถานะรายการที่ลงทะเบียนแล้ว
+      const allSportAthletes = await fetchAllAthletesInSport(sport.id);
+
       if (sport.name.includes('กรีฑา')) {
         const res = await fetch(`${SCRIPT_URL}?action=getAthleticsList`);
         setAthleticsEvents(await res.json());
         resetToEmpty(initialMax, initialAgeGroup);
       } else {
         await fetchAthleteData(initialAgeGroup, '', initialMax);
+        if (allSportAthletes.some(a => (a.ageGroup || '').trim() === initialAgeGroup)) {
+          checkAndWarnDuplicate(initialAgeGroup, '', allSportAthletes);
+        }
       }
     } finally {
       setIsLoading(false);
@@ -366,8 +492,71 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
         return;
     }
     if (!selectedSportForAthletes) return;
+    if (!globalAgeGroup) {
+        Swal.fire('คำแนะนำ', 'กรุณาเลือกรุ่นอายุก่อนบันทึกข้อมูล', 'warning');
+        return;
+    }
+    if (selectedSportForAthletes.name.includes('กรีฑา') && !selectedAthleticsEvent) {
+        Swal.fire('คำแนะนำ', 'กรุณาเลือกรายการกรีฑาก่อนบันทึกข้อมูล', 'warning');
+        return;
+    }
+
     const validAthletes = athletes.filter(a => a.firstName.trim() !== "");
-    if (validAthletes.length === 0) { Swal.fire('คำแนะนำ', 'กรุณากรอกข้อมูลนักกีฬาอย่างน้อย 1 รายชื่อ', 'warning'); return; }
+    if (validAthletes.length === 0) { 
+      Swal.fire('คำแนะนำ', 'กรุณากรอกข้อมูลนักกีฬาอย่างน้อย 1 รายชื่อ', 'warning'); 
+      return; 
+    }
+
+    // 1. ตรวจสอบรายชื่อนักกีฬาซ้ำกันภายในชุดเดียวกัน
+    const nameMap = new Map<string, number>();
+    let duplicateName = '';
+    for (const ath of validAthletes) {
+      const full = `${ath.firstName.trim()} ${ath.lastName.trim()}`.toLowerCase();
+      if (nameMap.has(full)) {
+        duplicateName = `${ath.prefix}${ath.firstName} ${ath.lastName}`;
+        break;
+      }
+      nameMap.set(full, 1);
+    }
+
+    if (duplicateName) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'พบรายชื่อนักกีฬาซ้ำกัน',
+        text: `พบชื่อนักกีฬา "${duplicateName}" ซ้ำกันในชุดเดียวกัน กรุณาตรวจสอบและแก้ไขให้ถูกต้องก่อนบันทึก`,
+        confirmButtonText: 'ตกลง'
+      });
+      return;
+    }
+
+    // 2. ตรวจสอบการลงทะเบียนซ้ำเดิมของรายการกีฬาและรุ่นอายุ (และรายการกรีฑา)
+    const existingAthletes = getExistingAthletesForCategory(globalAgeGroup, selectedAthleticsEvent);
+    if (existingAthletes.length > 0) {
+      const isAth = selectedSportForAthletes.name.includes('กรีฑา');
+      const confirmResult = await Swal.fire({
+        title: 'แจ้งเตือน: มีการลงทะเบียนรายการนี้ไว้แล้ว!',
+        html: `
+          <div class="text-left text-sm space-y-2">
+            <p class="text-slate-700">กีฬา: <b class="text-slate-900">${selectedSportForAthletes.name}</b></p>
+            <p class="text-slate-700">รุ่นอายุ: <b class="text-blue-600">${globalAgeGroup}</b> ${isAth && selectedAthleticsEvent ? `<br/>รายการแข่งขัน: <b class="text-orange-600">${selectedAthleticsEvent}</b>` : ''}</p>
+            <div class="bg-amber-50 border border-amber-200 p-3 rounded-2xl text-amber-900 text-xs mt-3">
+              ⚠️ <b>เคยลงทะเบียนไว้แล้วในระบบ (${existingAthletes.length} คน)</b><br/>
+              การกดยืนยันจะเป็นการบันทึกทับ/อัปเดตข้อมูลชุดเดิมด้วยรายชื่อชุดใหม่ (${validAthletes.length} คน)
+            </div>
+          </div>
+        `,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'ยืนยันบันทึกทับข้อมูลเดิม',
+        cancelButtonText: 'ยกเลิก',
+        confirmButtonColor: '#2563eb',
+        cancelButtonColor: '#94a3b8'
+      });
+
+      if (!confirmResult.isConfirmed) {
+        return;
+      }
+    }
     
     setIsSaving(true);
     Swal.fire({ title: 'กำลังบันทึก...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
@@ -395,8 +584,15 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
           }
         })
       });
+      await fetchAllAthletesInSport(selectedSportForAthletes.id);
       setHasSavedData(true);
-      Swal.fire({ icon: 'success', title: 'บันทึกสำเร็จ', timer: 1500, showConfirmButton: false });
+      Swal.fire({ 
+        icon: 'success', 
+        title: 'บันทึกสำเร็จ', 
+        text: `บันทึกข้อมูลนักกีฬา ${selectedSportForAthletes.name} ${globalAgeGroup} เรียบร้อยแล้ว`,
+        timer: 1800, 
+        showConfirmButton: false 
+      });
     } catch (err) {
       console.error('Save error:', err);
       Swal.fire('ผิดพลาด', 'ไม่สามารถบันทึกข้อมูลได้', 'error');
@@ -577,6 +773,103 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
             </div>
           </div>
 
+          {/* ส่วนแสดงสถานะรายการกีฬาที่ได้ลงทะเบียนแล้วในประเภทนี้ */}
+          <div className="bg-slate-50/90 border border-slate-200/90 rounded-[2rem] p-6 mb-8 shadow-inner">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-600 text-white rounded-2xl shadow-md">
+                  <ClipboardList size={20} />
+                </div>
+                <div>
+                  <h4 className="text-base font-black text-slate-800 flex items-center gap-2">
+                    สถานะรายการกีฬาที่ได้ลงทะเบียนแล้วในประเภทนี้
+                    <span className="text-xs bg-blue-100 text-blue-700 px-2.5 py-0.5 rounded-full font-bold">
+                      {registeredCategories.length} รายการ
+                    </span>
+                  </h4>
+                  <p className="text-xs text-slate-400 font-medium mt-0.5">
+                    คลิกที่รายการด้านล่างเพื่อสลับไปดูหรือแก้ไขข้อมูลนักกีฬาที่เคยลงทะเบียนไว้
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => selectedSportForAthletes && fetchAllAthletesInSport(selectedSportForAthletes.id)}
+                disabled={isLoadingAllSportAthletes}
+                className="self-start sm:self-auto flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:text-blue-600 hover:border-blue-300 transition-all shadow-sm active:scale-95"
+              >
+                <RefreshCw size={13} className={isLoadingAllSportAthletes ? 'animate-spin text-blue-600' : ''} />
+                รีเฟรชสถานะ
+              </button>
+            </div>
+
+            {isLoadingAllSportAthletes ? (
+              <div className="py-6 flex items-center justify-center gap-2 text-slate-400 text-xs font-bold">
+                <Loader2 size={18} className="animate-spin text-blue-600" />
+                กำลังตรวจสอบสถานะรายการกีฬาที่ลงทะเบียน...
+              </div>
+            ) : registeredCategories.length === 0 ? (
+              <div className="bg-white rounded-2xl p-5 border border-dashed border-slate-200 text-center">
+                <div className="inline-flex p-2 bg-amber-50 text-amber-500 rounded-xl mb-2">
+                  <Info size={20} />
+                </div>
+                <p className="text-xs font-bold text-slate-600">
+                  ยังไม่มีรายการใดลงทะเบียนในประเภทกีฬานี้
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  ท่านสามารถเลือกรุ่นอายุและกรอกรายชื่อนักกีฬาด้านล่าง จากนั้นกด "บันทึกข้อมูลนักกีฬา" เพื่อลงทะเบียน
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {registeredCategories.map((cat, idx) => {
+                  const isCurrent = cat.ageGroup === globalAgeGroup && (!isAthletics || cat.athleticsEvent === selectedAthleticsEvent);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleSelectRegisteredCategory(cat.ageGroup, cat.athleticsEvent)}
+                      className={`text-left p-3.5 rounded-2xl border transition-all flex flex-col justify-between group relative overflow-hidden active:scale-95 ${
+                        isCurrent
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-200 ring-2 ring-blue-400 ring-offset-2'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-blue-400 hover:shadow-md'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider ${
+                          isCurrent ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-700'
+                        }`}>
+                          ✓ ลงทะเบียนแล้ว
+                        </span>
+                        <span className={`text-xs font-black px-2 py-0.5 rounded-md ${
+                          isCurrent ? 'bg-white text-blue-700' : 'bg-blue-50 text-blue-600'
+                        }`}>
+                          {cat.athleteCount} คน
+                        </span>
+                      </div>
+                      <div>
+                        <p className={`font-black text-xs leading-tight ${isCurrent ? 'text-white' : 'text-slate-800'}`}>
+                          {cat.ageGroup}
+                        </p>
+                        {cat.athleticsEvent && (
+                          <p className={`text-[11px] font-bold mt-1 line-clamp-1 ${isCurrent ? 'text-blue-100' : 'text-slate-500'}`}>
+                            {cat.athleticsEvent}
+                          </p>
+                        )}
+                      </div>
+                      <div className={`mt-2.5 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
+                        isCurrent ? 'border-white/20 text-blue-100' : 'border-slate-100 text-slate-400 group-hover:text-blue-600'
+                      }`}>
+                        <span>{isCurrent ? '● กำลังแก้ไขชุดนี้' : 'คลิกเพื่อแก้ไขชุดนี้'}</span>
+                        <ChevronRight size={12} />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="lg:col-span-1 space-y-6">
               <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 shadow-inner">
@@ -585,6 +878,31 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, schoolName,
                   <option value="">-- เลือกรุ่นอายุ --</option>
                   {ageGroups.map(ag => <option key={ag.id} value={`${ag.age} (${ag.gender})`}>{ag.age} ({ag.gender})</option>)}
                 </select>
+
+                {globalAgeGroup && (
+                  <div className="mt-4">
+                    {isCurrentCategoryRegistered(globalAgeGroup, selectedAthleticsEvent) ? (
+                      <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-2.5 text-amber-900 shadow-sm animate-in fade-in">
+                        <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-xs font-black">
+                            สถานะ: ลงทะเบียนแล้ว ({getExistingAthletesForCategory(globalAgeGroup, selectedAthleticsEvent).length} คน)
+                          </p>
+                          <p className="text-[11px] text-amber-700 mt-0.5 font-medium leading-relaxed">
+                            รายการและรุ่นนี้มีข้อมูลอยู่ในระบบแล้ว การบันทึกจะเป็นการแก้ไข/บันทึกทับข้อมูลเดิม
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2.5 text-emerald-800 shadow-sm animate-in fade-in">
+                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                        <p className="text-xs font-black">
+                          สถานะ: ยังไม่ได้ลงทะเบียน (เป็นชุดใหม่)
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {isAthletics && (
                   <div className="mt-6">
                     <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2"><TrophyIcon size={14} className="text-blue-600" /> รายการกรีฑา</h4>

@@ -8,11 +8,28 @@ function doGet(e) {
   
   try {
     if (action === 'getAccounts') {
-      const sheet = ss.getSheetByName('user');
+      const sheet = getOrCreateSheet(ss, 'user');
       const data = sheet.getDataRange().getValues();
+      const profileSheet = ss.getSheetByName('school_profiles');
+      const profileMap = {};
+      if (profileSheet) {
+        const pData = profileSheet.getDataRange().getValues();
+        for (let j = 1; j < pData.length; j++) {
+          const pId = String(pData[j][0]).trim();
+          if (pId) {
+            profileMap[pId] = String(pData[j][7] || '').trim();
+          }
+        }
+      }
       const acc = {};
       for(let i=1; i<data.length; i++) {
-        acc[data[i][0]] = { name: data[i][1], username: data[i][2], password: data[i][3] };
+        const id = String(data[i][0]).trim();
+        acc[id] = { 
+          name: data[i][1], 
+          username: data[i][2], 
+          password: data[i][3],
+          responsibleSport: profileMap[id] || ''
+        };
       }
       return createJsonResponse(acc);
     }
@@ -122,8 +139,10 @@ function doGet(e) {
         rank1SchoolName: String(r[6]).trim(),
         rank2SchoolId: String(r[7]).trim(),
         rank2SchoolName: String(r[8]).trim(),
-        rank3SchoolId: String(r[9]).trim(),
-        rank3SchoolName: String(r[10]).trim(),
+        rank3SchoolId: String(r[9] || '').trim(),
+        rank3SchoolName: String(r[10] || '').trim(),
+        rank3SchoolId2: String(r[16] || '').trim(),
+        rank3SchoolName2: String(r[17] || '').trim(),
         certStartNo: r[13] || '', 
         certEndNo: r[14] || '',   
         certTemplate: r[15] || '', 
@@ -193,10 +212,19 @@ function doGet(e) {
       const sheet = getOrCreateSheet(ss, 'school_profiles');
       const data = sheet.getDataRange().getValues();
       const schoolId = String(e.parameter.schoolId || '').trim();
-      let profile = { schoolId: schoolId, directorName: '', schoolColors: '', staffCount: '', motto: '', phoneNumber: '', logo: '' };
+      let profile = { schoolId: schoolId, directorName: '', schoolColors: '', staffCount: '', motto: '', phoneNumber: '', logo: '', responsibleSport: '' };
       for (let i = 1; i < data.length; i++) {
         if (String(data[i][0]).trim() === schoolId) {
-          profile = { schoolId: String(data[i][0]).trim(), directorName: data[i][1], schoolColors: data[i][2], staffCount: data[i][3], motto: data[i][4], phoneNumber: data[i][5], logo: data[i][6] };
+          profile = { 
+            schoolId: String(data[i][0]).trim(), 
+            directorName: data[i][1], 
+            schoolColors: data[i][2], 
+            staffCount: data[i][3], 
+            motto: data[i][4], 
+            phoneNumber: data[i][5], 
+            logo: data[i][6],
+            responsibleSport: data[i][7] || ''
+          };
           break;
         }
       }
@@ -441,7 +469,8 @@ function doPost(e) {
         String(d.rank2SchoolId).trim(), d.rank2SchoolName,
         String(d.rank3SchoolId).trim(), d.rank3SchoolName,
         new Date(), d.isPublished ? true : false,
-        d.certStartNo || '', d.certEndNo || '', d.certTemplate || '' 
+        d.certStartNo || '', d.certEndNo || '', d.certTemplate || '',
+        String(d.rank3SchoolId2 || '').trim(), d.rank3SchoolName2 || ''
       ];
       updateOrInsertRow(getOrCreateSheet(ss, 'results'), id, rowValues);
       return createJsonResponse({ status: 'success' });
@@ -593,7 +622,7 @@ function doPost(e) {
           });
         }
         
-        // 3. ชีตผลการแข่งขัน (อันดับ 1, 2, 3)
+        // 3. ชีตผลการแข่งขัน (อันดับ 1, 2, 3 และ 3 ร่วม)
         const resultsSheet = ss.getSheetByName('results');
         if (resultsSheet) {
           const resultsData = resultsSheet.getDataRange().getValues();
@@ -601,6 +630,7 @@ function doPost(e) {
             if (String(resultsData[i][5]).trim() === id) resultsSheet.getRange(i + 1, 7).setValue(newName);
             if (String(resultsData[i][7]).trim() === id) resultsSheet.getRange(i + 1, 9).setValue(newName);
             if (String(resultsData[i][9]).trim() === id) resultsSheet.getRange(i + 1, 11).setValue(newName);
+            if (resultsData[i].length > 16 && String(resultsData[i][16]).trim() === id) resultsSheet.getRange(i + 1, 18).setValue(newName);
           }
         }
         
@@ -609,7 +639,60 @@ function doPost(e) {
       }
 
       updateOrInsertRow(getOrCreateSheet(ss, 'user'), id, [id, newName, d.username, d.password]);
+      
+      if (d.responsibleSport !== undefined || d.responsibleSports !== undefined) {
+        let respStr = '';
+        if (Array.isArray(d.responsibleSports)) {
+          respStr = d.responsibleSports.map(s => String(s).trim()).filter(Boolean).join(', ');
+        } else if (Array.isArray(d.responsibleSport)) {
+          respStr = d.responsibleSport.map(s => String(s).trim()).filter(Boolean).join(', ');
+        } else {
+          respStr = String(d.responsibleSport || '').trim();
+        }
+
+        const profSheet = getOrCreateSheet(ss, 'school_profiles');
+        const pData = profSheet.getDataRange().getValues();
+        let found = false;
+        for (let i = 1; i < pData.length; i++) {
+          if (String(pData[i][0]).trim() === id) {
+            profSheet.getRange(i + 1, 8).setValue(respStr);
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          profSheet.appendRow([id, '', '', '', '', '', '', respStr]);
+        }
+      }
+
       return createJsonResponse({ status: 'success' });
+    }
+
+    if (action === 'updateSchoolResponsibleSport') {
+      const schoolId = String(d.schoolId).trim();
+      let respStr = '';
+      if (Array.isArray(d.responsibleSports)) {
+        respStr = d.responsibleSports.map(s => String(s).trim()).filter(Boolean).join(', ');
+      } else if (Array.isArray(d.responsibleSport)) {
+        respStr = d.responsibleSport.map(s => String(s).trim()).filter(Boolean).join(', ');
+      } else {
+        respStr = String(d.responsibleSport || '').trim();
+      }
+
+      const profSheet = getOrCreateSheet(ss, 'school_profiles');
+      const pData = profSheet.getDataRange().getValues();
+      let found = false;
+      for (let i = 1; i < pData.length; i++) {
+        if (String(pData[i][0]).trim() === schoolId) {
+          profSheet.getRange(i + 1, 8).setValue(respStr);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        profSheet.appendRow([schoolId, '', '', '', '', '', '', respStr]);
+      }
+      return createJsonResponse({ status: 'success', responsibleSport: respStr });
     }
 
     if (action === 'deleteAgeGroup') {
@@ -622,7 +705,35 @@ function doPost(e) {
     }
     if (action === 'updateSchoolProfile') {
       const schoolIdStr = String(d.schoolId).trim();
-      updateOrInsertRow(getOrCreateSheet(ss, 'school_profiles'), schoolIdStr, [schoolIdStr, d.directorName, d.schoolColors, d.staffCount, d.motto, d.phoneNumber, d.logo]);
+      const profSheet = getOrCreateSheet(ss, 'school_profiles');
+      const pData = profSheet.getDataRange().getValues();
+      let existingRespSport = '';
+      for (let i = 1; i < pData.length; i++) {
+        if (String(pData[i][0]).trim() === schoolIdStr) {
+          existingRespSport = pData[i][7] || '';
+          break;
+        }
+      }
+      let respSportToSave = existingRespSport;
+      if (d.responsibleSports !== undefined && Array.isArray(d.responsibleSports)) {
+        respSportToSave = d.responsibleSports.map(s => String(s).trim()).filter(Boolean).join(', ');
+      } else if (d.responsibleSport !== undefined) {
+        if (Array.isArray(d.responsibleSport)) {
+          respSportToSave = d.responsibleSport.map(s => String(s).trim()).filter(Boolean).join(', ');
+        } else {
+          respSportToSave = String(d.responsibleSport).trim();
+        }
+      }
+      updateOrInsertRow(profSheet, schoolIdStr, [
+        schoolIdStr, 
+        d.directorName || '', 
+        d.schoolColors || '', 
+        d.staffCount || '', 
+        d.motto || '', 
+        d.phoneNumber || '', 
+        d.logo || '',
+        respSportToSave
+      ]);
       return createJsonResponse({ status: 'success' });
     }
     

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UserSession, SchoolProfile, Sport, Athlete, CompetitionResult, FeedbackRecord, School } from '../types';
+import { UserSession, SchoolProfile, Sport, Athlete, CompetitionResult, FeedbackRecord, School, parseResponsibleSports } from '../types';
 import { SCRIPT_URL, ICON_MAP } from '../constants';
 import RegistrationPage from './RegistrationPage';
 import { 
@@ -57,7 +57,7 @@ interface DashboardPageProps {
   onNavigate: (path: string) => void;
 }
 
-type TabType = 'overview' | 'profile' | 'register' | 'check-list' | 'rules' | 'feedback' | 'results-view';
+type TabType = 'overview' | 'profile' | 'register' | 'check-list' | 'rules' | 'feedback' | 'results-view' | 'live-score';
 
 interface MedalStanding {
   schoolId: string;
@@ -75,9 +75,26 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
   const [sportsList, setSportsList] = useState<Sport[]>([]);
   const [resultsList, setResultsList] = useState<CompetitionResult[]>([]);
   const [schools, setSchools] = useState<School[]>([]);
+  const [ageGroups, setAgeGroups] = useState<any[]>([]);
+  const [athleticsList, setAthleticsList] = useState<any[]>([]);
   const [isOverviewLoading, setIsOverviewLoading] = useState(false);
   const [isSportsLoading, setIsSportsLoading] = useState(false);
   
+  // Live score reporting states
+  const [selectedLiveSport, setSelectedLiveSport] = useState<string>('');
+  const [liveResultsFilterSport, setLiveResultsFilterSport] = useState<string>('all');
+  const [liveAgeGroup, setLiveAgeGroup] = useState('');
+  const [liveAthEvent, setLiveAthEvent] = useState('');
+  const [liveRank1, setLiveRank1] = useState('');
+  const [liveRank2, setLiveRank2] = useState('');
+  const [liveRank3, setLiveRank3] = useState('');
+  const [liveRank3_2, setLiveRank3_2] = useState('');
+  const [liveIsPublished, setLiveIsPublished] = useState(true);
+  const [isSavingLive, setIsSavingLive] = useState(false);
+  const [editingLiveResult, setEditingLiveResult] = useState<Partial<CompetitionResult> | null>(null);
+  const [liveRegisteredSchools, setLiveRegisteredSchools] = useState<{ id: string; name: string }[]>([]);
+  const [isLoadingLiveSchools, setIsLoadingLiveSchools] = useState(false);
+
   // Filter states for results view
   const [searchSport, setSearchSport] = useState('');
   const [searchAge, setSearchAge] = useState('');
@@ -100,7 +117,8 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     staffCount: '',
     motto: '',
     phoneNumber: '',
-    logo: ''
+    logo: '',
+    responsibleSport: ''
   });
   
   const [isProfileLoading, setIsProfileLoading] = useState(false);
@@ -120,24 +138,36 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     const fetchOverviewStats = async () => {
       setIsOverviewLoading(true);
       try {
-        const [regRes, resultsRes, sportsRes, accRes] = await Promise.all([
+        const [regRes, resultsRes, sportsRes, accRes, profileRes, ageRes, athRes] = await Promise.all([
           fetch(`${SCRIPT_URL}?action=getRegistrations&schoolId=${session.schoolId}`),
           fetch(`${SCRIPT_URL}?action=getResults`),
           fetch(`${SCRIPT_URL}?action=getSports`),
-          fetch(`${SCRIPT_URL}?action=getAccounts`)
+          fetch(`${SCRIPT_URL}?action=getAccounts`),
+          fetch(`${SCRIPT_URL}?action=getSchoolProfile&schoolId=${session.schoolId}`),
+          fetch(`${SCRIPT_URL}?action=getAgeGroups`),
+          fetch(`${SCRIPT_URL}?action=getAthleticsList`)
         ]);
         const regData = await regRes.json();
         const resultsData = await resultsRes.json();
         const sportsData = await sportsRes.json();
         const accData = await accRes.json();
+        const profileData = await profileRes.json();
+        const ageData = await ageRes.json();
+        const athData = await athRes.json();
         
         if (Array.isArray(regData)) setRegisteredCount(regData.length);
         if (Array.isArray(resultsData)) setResultsList(resultsData);
         if (Array.isArray(sportsData)) setSportsList(sportsData);
+        if (Array.isArray(ageData)) setAgeGroups(ageData);
+        if (Array.isArray(athData)) setAthleticsList(athData);
+        if (profileData && profileData.schoolId) {
+          setProfile(profileData);
+        }
         if (accData) {
           const mappedSchools = Object.keys(accData).map(id => ({ 
             id: String(id).trim(), 
-            name: accData[id].name || ''
+            name: accData[id].name || '',
+            responsibleSport: accData[id].responsibleSport || ''
           }));
           setSchools(mappedSchools);
         }
@@ -147,8 +177,8 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
         setIsOverviewLoading(false);
       }
     };
-    if (activeTab === 'overview' || activeTab === 'results-view') fetchOverviewStats();
-  }, [session.schoolId, activeTab]);
+    fetchOverviewStats();
+  }, [session.schoolId]);
 
   useEffect(() => {
     if (activeTab === 'profile') {
@@ -299,6 +329,9 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
       addMedal(res.rank1SchoolId, res.rank1SchoolName, 'gold');
       addMedal(res.rank2SchoolId, res.rank2SchoolName, 'silver');
       addMedal(res.rank3SchoolId, res.rank3SchoolName, 'bronze');
+      if (res.rank3SchoolId2 && res.rank3SchoolName2) {
+        addMedal(res.rank3SchoolId2, res.rank3SchoolName2, 'bronze');
+      }
     });
 
     return Object.values(standingsMap).sort((a, b) => {
@@ -339,13 +372,15 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     const schoolMedals = resultsList.filter(r => r.isPublished && (
       r.rank1SchoolId === selectedSchoolForMedals.schoolId || 
       r.rank2SchoolId === selectedSchoolForMedals.schoolId || 
-      r.rank3SchoolId === selectedSchoolForMedals.schoolId
+      r.rank3SchoolId === selectedSchoolForMedals.schoolId ||
+      r.rank3SchoolId2 === selectedSchoolForMedals.schoolId
     )).map(r => ({
       sportName: r.sportName,
       ageGroup: r.ageGroup,
       athleticsEvent: r.athleticsEvent || '-',
       rank: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'ชนะเลิศ (เหรียญทอง)' : 
-            r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 1 (เหรียญเงิน)' : 'รองชนะเลิศอันดับ 2 (เหรียญทองแดง)'
+            r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 1 (เหรียญเงิน)' : 
+            (r.rank3SchoolId2 === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 2 ร่วม (เหรียญทองแดง)' : 'รองชนะเลิศอันดับ 2 (เหรียญทองแดง)')
     }));
 
     // CSV Header with BOM for Thai encoding
@@ -658,8 +693,137 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     }
   };
 
+  useEffect(() => {
+    const mySports = parseResponsibleSports(profile.responsibleSport);
+    const activeSportName = selectedLiveSport && mySports.includes(selectedLiveSport)
+      ? selectedLiveSport
+      : (mySports[0] || '');
+
+    const fetchSchoolsForLive = async () => {
+      if (!activeSportName) return;
+      const sport = sportsList.find(s => s.name === activeSportName);
+      if (!sport) return;
+
+      setIsLoadingLiveSchools(true);
+      try {
+        let url = `${SCRIPT_URL}?action=getRegisteredSchoolsForEvent&sportId=${sport.id}&ageGroup=${encodeURIComponent(liveAgeGroup)}`;
+        if (liveAthEvent) url += `&athleticsEvent=${encodeURIComponent(liveAthEvent)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        setLiveRegisteredSchools(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error('Fetch live schools error:', err);
+      } finally {
+        setIsLoadingLiveSchools(false);
+      }
+    };
+
+    if (activeTab === 'live-score' && (editingLiveResult || liveAgeGroup)) {
+      fetchSchoolsForLive();
+    }
+  }, [profile.responsibleSport, selectedLiveSport, liveAgeGroup, liveAthEvent, activeTab, sportsList, Boolean(editingLiveResult)]);
+
+  const handleSaveLiveResult = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const mySports = parseResponsibleSports(profile.responsibleSport);
+    const activeSportName = selectedLiveSport && mySports.includes(selectedLiveSport)
+      ? selectedLiveSport
+      : (mySports[0] || '');
+
+    if (!activeSportName) return;
+    const sport = sportsList.find(s => s.name === activeSportName);
+    const sportId = sport ? sport.id : '';
+
+    const availablePool = [...liveRegisteredSchools, ...schools];
+    const r1 = availablePool.find(s => s.id === liveRank1);
+    const r2 = availablePool.find(s => s.id === liveRank2);
+    const r3 = availablePool.find(s => s.id === liveRank3);
+    const r3_2 = availablePool.find(s => s.id === liveRank3_2);
+
+    const payload = {
+      id: editingLiveResult?.id || ('RES-' + Date.now()),
+      sportId: sportId,
+      sportName: activeSportName,
+      ageGroup: liveAgeGroup,
+      athleticsEvent: liveAthEvent,
+      rank1SchoolId: liveRank1 || '',
+      rank1SchoolName: liveRank1 ? (r1?.name || '') : '',
+      rank2SchoolId: liveRank2 || '',
+      rank2SchoolName: liveRank2 ? (r2?.name || '') : '',
+      rank3SchoolId: liveRank3 || '',
+      rank3SchoolName: liveRank3 ? (r3?.name || '') : '',
+      rank3SchoolId2: liveRank3_2 || '',
+      rank3SchoolName2: liveRank3_2 ? (r3_2?.name || '') : '',
+      isPublished: liveIsPublished
+    };
+
+    setIsSavingLive(true);
+    Swal.fire({ title: 'กำลังบันทึกผลการแข่งขัน...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    try {
+      const res = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'updateResult', data: payload })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        Swal.fire({ icon: 'success', title: 'บันทึกผลสำเร็จ', timer: 1500, showConfirmButton: false });
+        setEditingLiveResult(null);
+        setLiveAgeGroup('');
+        setLiveAthEvent('');
+        setLiveRank1('');
+        setLiveRank2('');
+        setLiveRank3('');
+        setLiveRank3_2('');
+        // Refresh results
+        const resRes = await fetch(`${SCRIPT_URL}?action=getResults`);
+        const resData = await resRes.json();
+        if (Array.isArray(resData)) setResultsList(resData);
+      } else {
+        throw new Error(data.message);
+      }
+    } catch (err: any) {
+      console.error('Save live score error:', err);
+      Swal.fire('ข้อผิดพลาด', err.toString() || 'ไม่สามารถบันทึกได้', 'error');
+    } finally {
+      setIsSavingLive(false);
+    }
+  };
+
+  const handleToggleLivePublish = async (resItem: CompetitionResult) => {
+    const newStatus = !resItem.isPublished;
+    Swal.fire({
+      title: newStatus ? 'กำลังเปิดเผยแพร่...' : 'กำลังปิดการเผยแพร่...',
+      allowOutsideClick: false,
+      didOpen: () => Swal.showLoading()
+    });
+    try {
+      const res = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'updateResult',
+          data: { ...resItem, isPublished: newStatus }
+        })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setResultsList(prev => prev.map(r => r.id === resItem.id ? { ...r, isPublished: newStatus } : r));
+        Swal.fire({ icon: 'success', title: newStatus ? 'เผยแพร่ผลเรียบร้อยแล้ว' : 'ปิดการแสดงผลแล้ว', timer: 1200, showConfirmButton: false });
+      }
+    } catch (err) {
+      Swal.fire('ข้อผิดพลาด', 'ไม่สามารถเปลี่ยนสถานะได้', 'error');
+    }
+  };
+
+  const myResponsibleSports = parseResponsibleSports(profile.responsibleSport);
   const menuItems = [
     { id: 'overview', label: 'ภาพรวมระบบ', icon: <LayoutDashboard size={20} /> },
+    ...(myResponsibleSports.length > 0 ? [{
+      id: 'live-score' as TabType,
+      label: `รายงานผล Live Score`,
+      icon: <Trophy size={20} className="text-amber-500 animate-pulse" />
+    }] : []),
     { id: 'profile', label: 'ข้อมูลพื้นฐาน', icon: <Settings size={20} /> },
     { id: 'register', label: 'ลงทะเบียนแข่งขันกีฬา', icon: <ClipboardList size={20} /> },
     { id: 'results-view', label: 'ตรวจสอบผลการแข่งขัน', icon: <Award size={20} /> },
@@ -674,7 +838,8 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     const schoolMedals = resultsList.filter(r => r.isPublished && (
       r.rank1SchoolId === selectedSchoolForMedals.schoolId || 
       r.rank2SchoolId === selectedSchoolForMedals.schoolId || 
-      r.rank3SchoolId === selectedSchoolForMedals.schoolId
+      r.rank3SchoolId === selectedSchoolForMedals.schoolId ||
+      r.rank3SchoolId2 === selectedSchoolForMedals.schoolId
     )).map(r => ({
       ...r,
       type: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'gold' : 
@@ -792,7 +957,51 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                   >
                     <Award size={18} /> ตรวจสอบผลรางวัล
                   </button>
+                  {myResponsibleSports.length > 0 && (
+                    <button 
+                      onClick={() => setActiveTab('live-score')}
+                      className="bg-amber-400 hover:bg-amber-300 text-slate-900 px-8 py-3.5 rounded-2xl font-black shadow-lg transition-all active:scale-95 text-sm flex items-center gap-2"
+                    >
+                      <Trophy size={18} /> รายงานผล Live Score ({myResponsibleSports.length} ชนิดกีฬา)
+                    </button>
+                  )}
                 </div>
+
+                {myResponsibleSports.length > 0 && (
+                  <div className="mt-8 p-6 bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-inner">
+                    <div className="flex items-start sm:items-center gap-4">
+                      <div className="w-12 h-12 rounded-2xl bg-amber-400 text-slate-900 flex items-center justify-center font-black shadow-lg shrink-0 mt-1 sm:mt-0">
+                        <Trophy size={24} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-black uppercase tracking-widest bg-amber-400/30 text-amber-200 px-2.5 py-0.5 rounded-md">
+                            สนามกีฬาที่รับผิดชอบ
+                          </span>
+                          <span className="text-[10px] font-bold text-amber-200">
+                            ({myResponsibleSports.length} ชนิดกีฬา)
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                          {myResponsibleSports.map(sp => (
+                            <span key={sp} className="inline-flex items-center gap-1 px-3 py-1 bg-amber-400 text-slate-900 rounded-xl text-xs font-black shadow-sm">
+                              🏟️ {sp}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-xs text-blue-100/90 mt-1.5">
+                          โรงเรียนของท่านได้รับมอบหมายให้ดูแลและรายงานผลการแข่งขัน Live score สำหรับสนามกีฬาเหล่านี้
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setActiveTab('live-score')}
+                      className="px-6 py-3.5 bg-amber-400 hover:bg-amber-300 text-slate-900 rounded-2xl font-black text-xs transition-all shadow-lg active:scale-95 flex items-center gap-2 self-start sm:self-auto shrink-0"
+                    >
+                      <Award size={16} /> เข้าสู่หน้ารายงานผล
+                    </button>
+                  </div>
+                )}
               </div>
               <Trophy className="absolute right-[-20px] bottom-[-20px] w-64 h-64 text-white/10 rotate-12" />
             </section>
@@ -1077,17 +1286,35 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                                   <Medal size={24} className="text-orange-600/70 drop-shadow-sm" />
                                 </div>
                                 <div>
-                                  <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">รองชนะเลิศอันดับ 2</p>
+                                  <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">
+                                    {res.rank3SchoolName2 ? 'รองชนะเลิศอันดับ 2 (อันดับ 3)' : 'รองชนะเลิศอันดับ 2'}
+                                  </p>
                                   <h5 className="font-black text-slate-800 text-sm leading-tight">{res.rank3SchoolName || '-'}</h5>
                                 </div>
                               </div>
                               {res.rank3SchoolId === session.schoolId && <div className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />}
                             </div>
+
+                            {/* Bronze 2 (อันดับ 3 ร่วม) */}
+                            {res.rank3SchoolId2 && res.rank3SchoolName2 && (
+                              <div className={`flex items-center justify-between p-5 rounded-[1.8rem] border transition-all ${res.rank3SchoolId2 === session.schoolId ? 'bg-orange-100 border-orange-300 ring-2 ring-orange-400/20' : 'bg-orange-50/50 border-orange-100 hover:border-orange-200'}`}>
+                                <div className="flex items-center gap-4">
+                                  <div className="w-10 h-10 rounded-xl bg-white shadow-sm flex items-center justify-center">
+                                    <Medal size={24} className="text-orange-600/70 drop-shadow-sm" />
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">รองชนะเลิศอันดับ 2 ร่วม (อันดับ 3 ร่วม)</p>
+                                    <h5 className="font-black text-slate-800 text-sm leading-tight">{res.rank3SchoolName2}</h5>
+                                  </div>
+                                </div>
+                                {res.rank3SchoolId2 === session.schoolId && <div className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />}
+                              </div>
+                            )}
                           </div>
                         </div>
 
                         {/* Special Footer for "Own School" results */}
-                        {(res.rank1SchoolId === session.schoolId || res.rank2SchoolId === session.schoolId || res.rank3SchoolId === session.schoolId) && (
+                        {(res.rank1SchoolId === session.schoolId || res.rank2SchoolId === session.schoolId || res.rank3SchoolId === session.schoolId || res.rank3SchoolId2 === session.schoolId) && (
                           <div className="mt-auto bg-blue-600 p-5 flex items-center justify-between text-white animate-in slide-in-from-bottom-2">
                              <div className="flex items-center gap-3">
                                <div className="bg-white/20 p-2 rounded-xl">
@@ -1626,6 +1853,543 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                   ))
                 )}
               </div>
+            </div>
+          </div>
+        );
+
+      case 'live-score':
+        const mySports = parseResponsibleSports(profile.responsibleSport);
+        const currentActiveSport = selectedLiveSport && mySports.includes(selectedLiveSport)
+          ? selectedLiveSport
+          : (mySports[0] || '');
+
+        const mySportResults = resultsList.filter(r => {
+          if (liveResultsFilterSport === 'all') {
+            return mySports.includes(r.sportName);
+          }
+          return r.sportName === liveResultsFilterSport;
+        });
+
+        const isSportAthletics = currentActiveSport.includes('กรีฑา');
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+            {/* Header banner */}
+            <div className="bg-gradient-to-br from-amber-500 via-orange-600 to-amber-700 rounded-[2.5rem] p-8 md:p-10 text-white shadow-xl relative overflow-hidden">
+              <div className="relative z-10 max-w-2xl">
+                <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-[10px] font-black uppercase tracking-widest mb-3">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span>ระบบรายงานผลการแข่งขันสด (LIVE SCORE)</span>
+                </div>
+                <h2 className="text-3xl md:text-4xl font-black mb-2">
+                  {mySports.length > 1 
+                    ? `สนามกีฬาที่รับผิดชอบ (${mySports.length} ชนิดกีฬา)` 
+                    : `สนามกีฬา: ${currentActiveSport}`
+                  }
+                </h2>
+                <p className="text-amber-100 text-sm leading-relaxed font-medium">
+                  {session.schoolName} ได้รับมอบหมายให้บันทึกและอัพเดทผลการแข่งขันประจำสนาม เมื่อบันทึกและเผยแพร่แล้ว ผลจะปรากฏบนตารางเหรียญรางวัลและหน้าผลการแข่งขันของทุกโรงเรียนทันที
+                </p>
+
+                {/* Switcher when multiple sports are assigned */}
+                {mySports.length > 1 && (
+                  <div className="mt-5 pt-4 border-t border-white/20">
+                    <div className="text-xs font-bold text-amber-100 mb-2.5">
+                      เลือกสนาม/กีฬาที่ต้องการจัดการรายงานผล:
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {mySports.map(sp => (
+                        <button
+                          key={sp}
+                          type="button"
+                          onClick={() => {
+                            setSelectedLiveSport(sp);
+                            setLiveResultsFilterSport(sp);
+                            setLiveAgeGroup('');
+                            setLiveAthEvent('');
+                          }}
+                          className={`px-4 py-2 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 cursor-pointer ${
+                            currentActiveSport === sp
+                              ? 'bg-white text-slate-900 shadow-lg ring-2 ring-amber-300 scale-105'
+                              : 'bg-white/20 hover:bg-white/30 text-white'
+                          }`}
+                        >
+                          <span>🏟️ {sp}</span>
+                          {currentActiveSport === sp && <CheckCircle size={14} className="text-emerald-500" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-6 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => {
+                      setEditingLiveResult({});
+                      setLiveAgeGroup(ageGroups.length > 0 ? `${ageGroups[0].age} (${ageGroups[0].gender})` : '');
+                      setLiveAthEvent(athleticsList.length > 0 ? `${athleticsList[0].eventNo} ${athleticsList[0].name}` : '');
+                      setLiveRank1('');
+                      setLiveRank2('');
+                      setLiveRank3('');
+                      setLiveRank3_2('');
+                      setLiveIsPublished(true);
+                    }}
+                    className="px-6 py-3.5 bg-white text-slate-900 rounded-2xl font-black text-sm shadow-xl hover:bg-amber-50 active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    <Trophy size={18} className="text-amber-600" />
+                    + บันทึกผลการแข่งขันใหม่
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('results-view')}
+                    className="px-6 py-3.5 bg-black/20 hover:bg-black/30 border border-white/20 text-white rounded-2xl font-black text-sm transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    <Award size={18} />
+                    ดูผลการแข่งขันทั้งหมด
+                  </button>
+                </div>
+              </div>
+              <Trophy className="absolute right-[-30px] bottom-[-30px] w-64 h-64 text-white/10 rotate-12 pointer-events-none" />
+            </div>
+
+            {/* Form for recording or updating result */}
+            {editingLiveResult && (
+              <div className="bg-white rounded-[2.5rem] p-8 md:p-10 shadow-xl border-2 border-amber-200 animate-in slide-in-from-top-4 duration-300 relative">
+                <div className="flex items-center justify-between pb-6 mb-6 border-b border-slate-100">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl font-black">
+                      <Award size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-slate-900">
+                        {editingLiveResult.id ? 'แก้ไขผลการแข่งขัน (Live Score)' : 'บันทึกผลการแข่งขันใหม่ (Live Score)'}
+                      </h3>
+                      <p className="text-xs text-amber-600 font-bold uppercase tracking-wider mt-0.5">
+                        🏟️ สนามกีฬา: {currentActiveSport}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingLiveResult(null)}
+                    className="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveLiveResult} className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Category selection */}
+                    <div className="space-y-4 bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                      <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                        <Trophy size={14} className="text-amber-500" /> ข้อมูลรุ่นและรายการแข่งขัน
+                      </h4>
+
+                      {mySports.length > 1 && (
+                        <div>
+                          <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">
+                            ชนิดกีฬา / สนามที่รายงานผล <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            required
+                            value={currentActiveSport}
+                            onChange={(e) => {
+                              setSelectedLiveSport(e.target.value);
+                              setLiveAgeGroup('');
+                              setLiveAthEvent('');
+                            }}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
+                          >
+                            {mySports.map(sp => (
+                              <option key={sp} value={sp}>
+                                🏟️ สนาม {sp}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">
+                          รุ่นอายุ <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          required
+                          value={liveAgeGroup}
+                          onChange={(e) => setLiveAgeGroup(e.target.value)}
+                          className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm"
+                        >
+                          <option value="">-- เลือกรุ่นอายุ --</option>
+                          {ageGroups.map(ag => (
+                            <option key={ag.id} value={`${ag.age} (${ag.gender})`}>
+                              {ag.age} ({ag.gender})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {isSportAthletics && (
+                        <div>
+                          <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">
+                            รายการกรีฑา <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            required
+                            value={liveAthEvent}
+                            onChange={(e) => setLiveAthEvent(e.target.value)}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm"
+                          >
+                            <option value="">-- เลือกรายการกรีฑา --</option>
+                            {athleticsList.map(ev => (
+                              <option key={ev.id} value={`${ev.eventNo} ${ev.name}`}>
+                                {ev.eventNo}. {ev.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div className="pt-2">
+                        <label className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-2xl cursor-pointer hover:border-amber-300 transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={liveIsPublished}
+                            onChange={(e) => setLiveIsPublished(e.target.checked)}
+                            className="w-5 h-5 accent-amber-500 rounded"
+                          />
+                          <div>
+                            <span className="text-xs font-black text-slate-800 block">
+                              เผยแพร่ผลทันที (Publish)
+                            </span>
+                            <span className="text-[10px] text-slate-400 block">
+                              หากเลือก ผลการแข่งขันจะแสดงบนกระดานสรุปเหรียญรางวัลทันที
+                            </span>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* School award selection */}
+                    <div className="space-y-4 bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                      <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                        <Medal size={14} className="text-yellow-500" /> สรุปผลรางวัล
+                      </h4>
+
+                      {isLoadingLiveSchools ? (
+                        <div className="py-8 text-center text-slate-400 flex flex-col items-center gap-2">
+                          <Loader2 size={24} className="animate-spin text-amber-500" />
+                          <span className="text-xs font-bold">กำลังดึงข้อมูลโรงเรียนที่ลงแข่งขัน...</span>
+                        </div>
+                      ) : liveRegisteredSchools.length === 0 ? (
+                        <div className="bg-white rounded-2xl p-8 text-center border-2 border-dashed border-amber-200 flex flex-col items-center gap-2">
+                          <Info className="text-amber-400" size={32} />
+                          <p className="text-xs font-bold text-slate-600">ยังไม่มีโรงเรียนลงทะเบียนในรายการนี้</p>
+                          <p className="text-[10px] text-slate-400 italic">กรุณาเลือกรุ่นอายุหรือรายการแข่งขันที่มีโรงเรียนลงทะเบียนเข้าร่วม</p>
+                        </div>
+                      ) : (
+                        (() => {
+                          const r1 = liveRank1;
+                          const r2 = liveRank2;
+                          const r3 = liveRank3;
+                          const r3_2 = liveRank3_2;
+
+                          // กรองเฉพาะโรงเรียนที่ได้ลงทะเบียนแข่งขันเท่านั้น และเมื่อเลือกแล้วจะไม่แสดงใน Dropdown อื่น
+                          const rank1LiveOptions = liveRegisteredSchools.filter(sc => sc.id === r1 || (sc.id !== r2 && sc.id !== r3 && sc.id !== r3_2));
+                          const rank2LiveOptions = liveRegisteredSchools.filter(sc => sc.id === r2 || (sc.id !== r1 && sc.id !== r3 && sc.id !== r3_2));
+                          const rank3LiveOptions = liveRegisteredSchools.filter(sc => sc.id === r3 || (sc.id !== r1 && sc.id !== r2 && sc.id !== r3_2));
+                          const rank3_2LiveOptions = liveRegisteredSchools.filter(sc => sc.id === r3_2 || (sc.id !== r1 && sc.id !== r2 && sc.id !== r3));
+
+                          return (
+                            <>
+                              <div>
+                                <div className="flex items-center justify-between mb-2 px-1">
+                                  <label className="text-[10px] font-black text-amber-600 flex items-center gap-1.5 uppercase tracking-widest">
+                                    <Medal size={14} className="text-yellow-500" /> ชนะเลิศ (เหรียญทอง) <span className="text-red-500">*</span>
+                                  </label>
+                                </div>
+                                <select
+                                  required
+                                  value={liveRank1}
+                                  onChange={(e) => setLiveRank1(e.target.value)}
+                                  className="w-full px-4 py-3 bg-white border border-amber-200 rounded-xl font-black text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
+                                >
+                                  <option value="">-- เลือกโรงเรียนชนะเลิศ --</option>
+                                  {rank1LiveOptions.map(sc => (
+                                    <option key={sc.id} value={sc.id}>
+                                      🥇 {sc.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <div className="flex items-center justify-between mb-2 px-1">
+                                  <label className="text-[10px] font-black text-slate-500 flex items-center gap-1.5 uppercase tracking-widest">
+                                    <Medal size={14} className="text-slate-400" /> รองชนะเลิศอันดับ 1 (เหรียญเงิน)
+                                  </label>
+                                  {liveRank2 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setLiveRank2('')}
+                                      className="text-[10px] font-bold text-red-500 hover:underline"
+                                    >
+                                      ล้างค่า
+                                    </button>
+                                  )}
+                                </div>
+                                <select
+                                  value={liveRank2}
+                                  onChange={(e) => setLiveRank2(e.target.value)}
+                                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
+                                >
+                                  <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
+                                  {rank2LiveOptions.map(sc => (
+                                    <option key={sc.id} value={sc.id}>
+                                      🥈 {sc.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <div className="flex items-center justify-between mb-2 px-1">
+                                  <label className="text-[10px] font-black text-orange-600 flex items-center gap-1.5 uppercase tracking-widest">
+                                    <Medal size={14} className="text-orange-500" /> รองชนะเลิศอันดับ 2 (เหรียญทองแดง)
+                                  </label>
+                                  {liveRank3 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setLiveRank3('')}
+                                      className="text-[10px] font-bold text-red-500 hover:underline"
+                                    >
+                                      ล้างค่า
+                                    </button>
+                                  )}
+                                </div>
+                                <select
+                                  value={liveRank3}
+                                  onChange={(e) => setLiveRank3(e.target.value)}
+                                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
+                                >
+                                  <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
+                                  {rank3LiveOptions.map(sc => (
+                                    <option key={sc.id} value={sc.id}>
+                                      🥉 {sc.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {/* อันดับ 3 ร่วม (เหรียญทองแดง อีก 1 ทีม) */}
+                              <div className="p-3 bg-orange-50/70 rounded-2xl border border-orange-200/80 space-y-2">
+                                <div className="flex items-center justify-between px-1">
+                                  <label className="text-[10px] font-black text-orange-600 flex items-center gap-1.5 uppercase tracking-widest">
+                                    <Medal size={14} className="text-orange-500" /> รองชนะเลิศอันดับ 2 ร่วม (อันดับ 3 ร่วม - เหรียญทองแดง)
+                                  </label>
+                                  {liveRank3_2 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setLiveRank3_2('')}
+                                      className="text-[10px] font-bold text-red-500 hover:underline"
+                                    >
+                                      ล้างค่า
+                                    </button>
+                                  )}
+                                </div>
+                                <select
+                                  value={liveRank3_2}
+                                  onChange={(e) => setLiveRank3_2(e.target.value)}
+                                  className="w-full px-4 py-3 bg-white border border-orange-300 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
+                                >
+                                  <option value="">-- เลือกโรงเรียนอันดับ 3 ร่วม (ถ้ามี) --</option>
+                                  {rank3_2LiveOptions.map(sc => (
+                                    <option key={sc.id} value={sc.id}>
+                                      🥉 {sc.name} (อันดับ 3 ร่วม)
+                                    </option>
+                                  ))}
+                                </select>
+                                <p className="text-[10px] text-orange-700/80 px-1 font-medium">
+                                  * เพิ่มโรงเรียนที่ได้รับเหรียญทองแดงอีก 1 ทีม (สำหรับรายการแข่งขันที่มีอันดับ 3 ร่วม)
+                                </p>
+                              </div>
+                            </>
+                          );
+                        })()
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setEditingLiveResult(null)}
+                      className="px-6 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-bold text-sm transition-all"
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingLive || !liveRank1 || !liveAgeGroup}
+                      className="px-8 py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-black text-sm shadow-lg shadow-amber-200 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                    >
+                      {isSavingLive ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                      บันทึกรายงานผล Live Score
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* List of existing results for this sport */}
+            <div className="bg-white rounded-[2.5rem] p-8 md:p-10 shadow-xl border border-slate-100">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                    <Award size={22} className="text-amber-500" />
+                    รายการผลการแข่งขันที่บันทึกแล้ว ({mySportResults.length} รายการ)
+                  </h3>
+                  <p className="text-xs text-slate-400 font-medium mt-0.5">
+                    {liveResultsFilterSport === 'all'
+                      ? `ผลการแข่งขันทุกสนามที่รับผิดชอบ (${mySports.join(', ')})`
+                      : `ผลการแข่งขันประจำสนามกีฬา ${liveResultsFilterSport}`
+                    }
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    const res = await fetch(`${SCRIPT_URL}?action=getResults`);
+                    const data = await res.json();
+                    if (Array.isArray(data)) setResultsList(data);
+                    Swal.fire({ icon: 'success', title: 'รีเฟรชข้อมูลสำเร็จ', timer: 1000, showConfirmButton: false });
+                  }}
+                  className="self-start sm:self-auto flex items-center gap-1.5 px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+                >
+                  <RefreshCw size={14} /> รีเฟรชผล
+                </button>
+              </div>
+
+              {/* Filter pills if multiple sports */}
+              {mySports.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2 mb-6 p-2 bg-slate-50 rounded-2xl border border-slate-100">
+                  <span className="text-xs font-bold text-slate-500 px-2">กรองตามสนาม:</span>
+                  <button
+                    type="button"
+                    onClick={() => setLiveResultsFilterSport('all')}
+                    className={`px-3.5 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                      liveResultsFilterSport === 'all'
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'bg-white hover:bg-slate-200 text-slate-600'
+                    }`}
+                  >
+                    ทั้งหมด ({resultsList.filter(r => mySports.includes(r.sportName)).length})
+                  </button>
+                  {mySports.map(sp => (
+                    <button
+                      key={sp}
+                      type="button"
+                      onClick={() => setLiveResultsFilterSport(sp)}
+                      className={`px-3.5 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                        liveResultsFilterSport === sp
+                          ? 'bg-amber-500 text-white shadow-sm'
+                          : 'bg-white hover:bg-slate-200 text-slate-600'
+                      }`}
+                    >
+                      🏟️ {sp} ({resultsList.filter(r => r.sportName === sp).length})
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {mySportResults.length === 0 ? (
+                <div className="py-16 text-center border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
+                  <Trophy size={48} className="mx-auto text-slate-300 mb-3" />
+                  <p className="text-sm font-bold text-slate-600">ยังไม่มีการบันทึกผลการแข่งขันในสนามนี้</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                    คลิกปุ่ม "+ บันทึกผลการแข่งขันใหม่" ด้านบนเพื่อเริ่มรายงานผล Live Score ของกีฬา {currentActiveSport}
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest">
+                      <tr>
+                        <th className="px-6 py-4">รุ่นอายุ / รายการ</th>
+                        <th className="px-6 py-4 text-amber-300">🥇 ชนะเลิศ (ทอง)</th>
+                        <th className="px-6 py-4 text-slate-300">🥈 รอง 1 (เงิน)</th>
+                        <th className="px-6 py-4 text-orange-300">🥉 รอง 2 (ทองแดง)</th>
+                        <th className="px-6 py-4 text-center">สถานะ</th>
+                        <th className="px-6 py-4 text-center">จัดการ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {mySportResults.map((item) => (
+                        <tr key={item.id} className="hover:bg-amber-50/30 transition-colors">
+                          <td className="px-6 py-4">
+                            <span className="font-black text-slate-800 text-sm block">{item.ageGroup}</span>
+                            {item.athleticsEvent && (
+                              <span className="text-[11px] text-slate-400 font-bold block mt-0.5">{item.athleticsEvent}</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-black text-amber-700 text-sm flex items-center gap-1.5">
+                              <Medal size={16} className="text-yellow-500 shrink-0" />
+                              <span>{item.rank1SchoolName || '-'}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-bold text-slate-600 text-sm flex items-center gap-1.5">
+                              <Medal size={16} className="text-slate-400 shrink-0" />
+                              <span>{item.rank2SchoolName || '-'}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-bold text-orange-700 text-sm flex items-center gap-1.5">
+                              <Medal size={16} className="text-orange-500 shrink-0" />
+                              <span>{item.rank3SchoolName || '-'}</span>
+                            </div>
+                            {item.rank3SchoolName2 && (
+                              <div className="font-bold text-orange-600 text-xs flex items-center gap-1.5 mt-0.5 pl-5">
+                                <span>🥉 {item.rank3SchoolName2} (ร่วม)</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <button
+                              onClick={() => handleToggleLivePublish(item)}
+                              className={`px-3 py-1 rounded-full text-[10px] font-black uppercase transition-all shadow-sm ${
+                                item.isPublished
+                                  ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                  : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                              }`}
+                              title="คลิกเพื่อสลับสถานะเผยแพร่"
+                            >
+                              {item.isPublished ? '● เผยแพร่แล้ว' : '○ ฉบับร่าง'}
+                            </button>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <button
+                              onClick={() => {
+                                setEditingLiveResult(item);
+                                setLiveAgeGroup(item.ageGroup || '');
+                                setLiveAthEvent(item.athleticsEvent || '');
+                                setLiveRank1(item.rank1SchoolId || '');
+                                setLiveRank2(item.rank2SchoolId || '');
+                                setLiveRank3(item.rank3SchoolId || '');
+                                setLiveRank3_2(item.rank3SchoolId2 || '');
+                                setLiveIsPublished(item.isPublished ?? true);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                              }}
+                              className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold rounded-xl text-xs transition-colors"
+                            >
+                              แก้ไข
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         );

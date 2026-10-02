@@ -4,6 +4,8 @@ export interface School {
   name: string;
   username?: string;
   password?: string;
+  responsibleSport?: string; // สนามกีฬา / ชนิดกีฬาที่รับผิดชอบ (เช่น "ฟุตบอล, วอลเลย์บอล")
+  responsibleSports?: string[]; // รายการชนิดกีฬาที่รับผิดชอบ
 }
 
 export interface Sport {
@@ -57,6 +59,23 @@ export interface SchoolProfile {
   motto: string;
   phoneNumber: string;
   logo: string;
+  responsibleSport?: string; // สนามกีฬา / ชนิดกีฬาที่รับผิดชอบ (เช่น "ฟุตบอล, วอลเลย์บอล")
+  responsibleSports?: string[];
+}
+
+export function parseResponsibleSports(value?: string | string[]): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(s => String(s).trim()).filter(Boolean);
+  return String(value)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+export function formatResponsibleSports(sports: string[]): string {
+  // กรองค่าว่างและค่าซ้ำ
+  const unique = Array.from(new Set(sports.map(s => s.trim()).filter(Boolean)));
+  return unique.join(', ');
 }
 
 export interface Athlete {
@@ -65,6 +84,7 @@ export interface Athlete {
   firstName: string;
   lastName: string;
   ageGroup: string;
+  athleticsEvent?: string;
   avatar: string;
   coach1Prefix: string;
   coach1First: string;
@@ -92,6 +112,8 @@ export interface CompetitionResult {
   rank2SchoolName: string;
   rank3SchoolId: string;
   rank3SchoolName: string;
+  rank3SchoolId2?: string; // อันดับ 3 ร่วม (เหรียญทองแดง)
+  rank3SchoolName2?: string;
   isPublished?: boolean;
   certStartNo?: string; // เลขที่เกียรติบัตรเริ่มต้น
   certEndNo?: string;   // เลขที่เกียรติบัตรสิ้นสุด

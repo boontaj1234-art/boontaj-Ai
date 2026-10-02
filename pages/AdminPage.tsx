@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SCRIPT_URL } from '../constants';
-import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete, FeedbackRecord } from '../types';
+import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete, FeedbackRecord, parseResponsibleSports, formatResponsibleSports } from '../types';
 import { 
   Users, 
   Trophy, 
@@ -145,7 +145,8 @@ const AdminPage: React.FC = () => {
         id: String(id).trim(), 
         name: accData[id].name || '',
         username: accData[id].username || '',
-        password: accData[id].password || ''
+        password: accData[id].password || '',
+        responsibleSport: accData[id].responsibleSport || ''
       }));
       
       setSchools(mappedSchools);
@@ -207,7 +208,7 @@ const AdminPage: React.FC = () => {
     if (activeTab === 'results' && editingResult) {
       fetchSchoolsForResults();
     }
-  }, [resSportId, resAgeGroup, resAthEvent, activeTab, sportTypes, editingResult]);
+  }, [resSportId, resAgeGroup, resAthEvent, activeTab, sportTypes, Boolean(editingResult)]);
 
   const handleRefresh = () => {
     setIsRefreshing(true);
@@ -234,6 +235,62 @@ const AdminPage: React.FC = () => {
       Swal.fire('เกิดข้อผิดพลาด', e.toString() || 'ไม่สามารถดำเนินการได้', 'error');
       return false;
     }
+  };
+
+  const handleSaveSchoolSports = async (schoolId: string, updatedSports: string[], actionMsg?: string) => {
+    const formatted = formatResponsibleSports(updatedSports);
+    // อัปเดตสถานะใน UI ทันที
+    setSchools(prev => prev.map(s => s.id === schoolId ? { ...s, responsibleSport: formatted } : s));
+    try {
+      const response = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'updateSchoolResponsibleSport',
+          data: { schoolId, responsibleSport: formatted }
+        })
+      });
+      const res = await response.json();
+      if (res.status === 'success') {
+        const Toast = Swal.mixin({
+          toast: true,
+          position: 'top-end',
+          showConfirmButton: false,
+          timer: 2000,
+          timerProgressBar: true
+        });
+        Toast.fire({
+          icon: 'success',
+          title: actionMsg || (formatted ? `อัปเดตสนามกีฬา: ${formatted}` : 'ยกเลิกสนามกีฬาที่รับผิดชอบแล้ว')
+        });
+      } else {
+        throw new Error(res.message);
+      }
+    } catch (err: any) {
+      console.error('Update responsible sport error:', err);
+      Swal.fire('ข้อผิดพลาด', 'ไม่สามารถบันทึกสนามกีฬาที่รับผิดชอบได้', 'error');
+      fetchData();
+    }
+  };
+
+  const handleAddSchoolSport = (schoolId: string, sportToAdd: string) => {
+    if (!sportToAdd) return;
+    const targetSchool = schools.find(s => s.id === schoolId);
+    const current = parseResponsibleSports(targetSchool?.responsibleSport);
+    if (current.includes(sportToAdd)) return;
+    const updated = [...current, sportToAdd];
+    handleSaveSchoolSports(schoolId, updated, `เพิ่มสนามกีฬา: ${sportToAdd}`);
+  };
+
+  const handleRemoveSchoolSport = (schoolId: string, sportToRemove: string) => {
+    const targetSchool = schools.find(s => s.id === schoolId);
+    const current = parseResponsibleSports(targetSchool?.responsibleSport);
+    const updated = current.filter(s => s !== sportToRemove);
+    handleSaveSchoolSports(schoolId, updated, `ลบ ${sportToRemove} ออกแล้ว`);
+  };
+
+  const handleClearAllSchoolSports = (schoolId: string) => {
+    handleSaveSchoolSports(schoolId, [], 'ยกเลิกสนามกีฬาที่รับผิดชอบทั้งหมดแล้ว');
   };
 
   const handleTogglePublish = async (result: CompetitionResult) => {
@@ -300,10 +357,11 @@ const AdminPage: React.FC = () => {
         return Array.isArray(data) ? data : [];
       };
 
-      const [athletesR1, athletesR2, athletesR3] = await Promise.all([
+      const [athletesR1, athletesR2, athletesR3, athletesR3_2] = await Promise.all([
         getAthletesList(result.rank1SchoolId),
         getAthletesList(result.rank2SchoolId),
-        getAthletesList(result.rank3SchoolId)
+        getAthletesList(result.rank3SchoolId),
+        getAthletesList(result.rank3SchoolId2 || '')
       ]);
 
       const individualRecords: any[] = [];
@@ -344,6 +402,20 @@ const AdminPage: React.FC = () => {
           athleticsEvent: result.athleticsEvent || '-'
         });
       });
+
+      if (result.rank3SchoolId2 && result.rank3SchoolName2) {
+        athletesR3_2.forEach((ath) => {
+          individualRecords.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`,
+            schoolName: result.rank3SchoolName2,
+            rank: 'รองชนะเลิศอันดับ 2 (ร่วม)',
+            sportName: result.sportName,
+            ageGroup: result.ageGroup,
+            athleticsEvent: result.athleticsEvent || '-'
+          });
+        });
+      }
 
       const lastIdx = individualRecords.length > 0 ? individualRecords.length - 1 : 0;
       const certEndNo = formatCertNo(result.certStartNo || '', lastIdx);
@@ -482,18 +554,25 @@ const AdminPage: React.FC = () => {
     e.preventDefault();
     if (!editingResult) return;
     const sport = sportTypes.find(s => s.id === resSportId);
+    const r1Id = editingResult.rank1SchoolId || '';
+    const r2Id = editingResult.rank2SchoolId || '';
+    const r3Id = editingResult.rank3SchoolId || '';
+    const r3_2Id = editingResult.rank3SchoolId2 || '';
+
     const payload = {
       ...editingResult,
       sportId: resSportId,
       sportName: sport ? sport.name : (editingResult.sportName || ''),
       ageGroup: resAgeGroup,
       athleticsEvent: resAthEvent,
-      rank1SchoolId: editingResult.rank1SchoolId,
-      rank1SchoolName: resRegisteredSchools.find(s => s.id === editingResult.rank1SchoolId)?.name || (editingResult.rank1SchoolName || ''),
-      rank2SchoolId: editingResult.rank2SchoolId,
-      rank2SchoolName: resRegisteredSchools.find(s => s.id === editingResult.rank2SchoolId)?.name || (editingResult.rank2SchoolName || ''),
-      rank3SchoolId: editingResult.rank3SchoolId,
-      rank3SchoolName: resRegisteredSchools.find(s => s.id === editingResult.rank3SchoolId)?.name || (editingResult.rank3SchoolName || ''),
+      rank1SchoolId: r1Id,
+      rank1SchoolName: r1Id ? (resRegisteredSchools.find(s => s.id === r1Id)?.name || editingResult.rank1SchoolName || '') : '',
+      rank2SchoolId: r2Id,
+      rank2SchoolName: r2Id ? (resRegisteredSchools.find(s => s.id === r2Id)?.name || editingResult.rank2SchoolName || '') : '',
+      rank3SchoolId: r3Id,
+      rank3SchoolName: r3Id ? (resRegisteredSchools.find(s => s.id === r3Id)?.name || editingResult.rank3SchoolName || '') : '',
+      rank3SchoolId2: r3_2Id,
+      rank3SchoolName2: r3_2Id ? (resRegisteredSchools.find(s => s.id === r3_2Id)?.name || editingResult.rank3SchoolName2 || '') : '',
     };
     Swal.fire({ title: 'กำลังบันทึก...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
     if (await handlePostRequest({ action: 'updateResult', data: payload })) {
@@ -569,6 +648,9 @@ const AdminPage: React.FC = () => {
       addMedal(res.rank1SchoolId, res.rank1SchoolName, 'gold');
       addMedal(res.rank2SchoolId, res.rank2SchoolName, 'silver');
       addMedal(res.rank3SchoolId, res.rank3SchoolName, 'bronze');
+      if (res.rank3SchoolId2 && res.rank3SchoolName2) {
+        addMedal(res.rank3SchoolId2, res.rank3SchoolName2, 'bronze');
+      }
     });
 
     return Object.values(standingsMap).sort((a, b) => {
@@ -609,13 +691,15 @@ const AdminPage: React.FC = () => {
     const schoolMedals = resultsList.filter(r => r.isPublished && (
       r.rank1SchoolId === selectedSchoolForMedals.schoolId || 
       r.rank2SchoolId === selectedSchoolForMedals.schoolId || 
-      r.rank3SchoolId === selectedSchoolForMedals.schoolId
+      r.rank3SchoolId === selectedSchoolForMedals.schoolId ||
+      r.rank3SchoolId2 === selectedSchoolForMedals.schoolId
     )).map(r => ({
       sportName: r.sportName,
       ageGroup: r.ageGroup,
       athleticsEvent: r.athleticsEvent || '-',
       rank: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'ชนะเลิศ' : 
-            r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 1' : 'รองชนะเลิศอันดับ 2',
+            r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 1' : 
+            (r.rank3SchoolId2 === selectedSchoolForMedals.schoolId ? 'รองชนะเลิศอันดับ 2 (ร่วม)' : 'รองชนะเลิศอันดับ 2'),
       medalType: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'ทอง' : 
                 r.rank2SchoolId === selectedSchoolForMedals.schoolId ? 'เงิน' : 'ทองแดง'
     }));
@@ -656,7 +740,10 @@ const AdminPage: React.FC = () => {
 
     sportResults.forEach(res => {
       const category = res.athleticsEvent ? `${res.ageGroup} (${res.athleticsEvent})` : res.ageGroup;
-      csvContent += `${category},${res.rank1SchoolName || '-'},${res.rank2SchoolName || '-'},${res.rank3SchoolName || '-'}\n`;
+      const bronzeDisplay = res.rank3SchoolName2
+        ? `"${(res.rank3SchoolName || '-') + ' และ ' + res.rank3SchoolName2 + ' (อันดับ 3 ร่วม)'}"`
+        : `"${res.rank3SchoolName || '-'}"`;
+      csvContent += `"${category}","${res.rank1SchoolName || '-'}","${res.rank2SchoolName || '-'}",${bronzeDisplay}\n`;
     });
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -683,16 +770,22 @@ const AdminPage: React.FC = () => {
         return Array.isArray(data) ? data : [];
       };
 
-      const [athletesR1, athletesR2, athletesR3] = await Promise.all([
+      const [athletesR1, athletesR2, athletesR3, athletesR3_2] = await Promise.all([
         getAthletesList(result.rank1SchoolId),
         getAthletesList(result.rank2SchoolId),
-        getAthletesList(result.rank3SchoolId)
+        getAthletesList(result.rank3SchoolId),
+        getAthletesList(result.rank3SchoolId2 || '')
       ]);
 
       let printData: { athletes: Athlete[], schoolName: string, rankTitle: string, globalOffset: number }[] = [];
       if (rank === 1 || rank === 'all') if (athletesR1.length > 0) printData.push({ athletes: athletesR1, schoolName: result.rank1SchoolName, rankTitle: 'ชนะเลิศ', globalOffset: 0 });
       if (rank === 2 || rank === 'all') if (athletesR2.length > 0) printData.push({ athletes: athletesR2, schoolName: result.rank2SchoolName, rankTitle: 'รองชนะเลิศอันดับ 1', globalOffset: athletesR1.length });
-      if (rank === 3 || rank === 'all') if (athletesR3.length > 0) printData.push({ athletes: athletesR3, schoolName: result.rank3SchoolName, rankTitle: 'รองชนะเลิศอันดับ 2', globalOffset: athletesR1.length + athletesR2.length });
+      if (rank === 3 || rank === 'all') {
+        if (athletesR3.length > 0) printData.push({ athletes: athletesR3, schoolName: result.rank3SchoolName, rankTitle: 'รองชนะเลิศอันดับ 2', globalOffset: athletesR1.length + athletesR2.length });
+        if (athletesR3_2.length > 0 && result.rank3SchoolName2) {
+          printData.push({ athletes: athletesR3_2, schoolName: result.rank3SchoolName2, rankTitle: 'รองชนะเลิศอันดับ 2 (ร่วม)', globalOffset: athletesR1.length + athletesR2.length + athletesR3.length });
+        }
+      }
 
       if (printData.length === 0) { Swal.fire('ไม่พบข้อมูล', 'ไม่มีรายชื่อนักกีฬาในลำดับที่เลือก', 'info'); return; }
 
@@ -766,7 +859,8 @@ const AdminPage: React.FC = () => {
     const schoolMedals = resultsList.filter(r => r.isPublished && (
       r.rank1SchoolId === selectedSchoolForMedals.schoolId || 
       r.rank2SchoolId === selectedSchoolForMedals.schoolId || 
-      r.rank3SchoolId === selectedSchoolForMedals.schoolId
+      r.rank3SchoolId === selectedSchoolForMedals.schoolId ||
+      r.rank3SchoolId2 === selectedSchoolForMedals.schoolId
     )).map(r => ({
       ...r,
       type: r.rank1SchoolId === selectedSchoolForMedals.schoolId ? 'gold' : 
@@ -1004,7 +1098,7 @@ const AdminPage: React.FC = () => {
                   if (activeTab === 'sportTypes') setEditingSportType({ id: `S-${Date.now()}`, name: '', description: '', certTemplate: '', rulesPdf: '' });
                   if (activeTab === 'athletics') setEditingAthletics({ id: `AT-${Date.now()}`, eventNo: '', name: '', description: '' });
                   if (activeTab === 'results') {
-                      setEditingResult({ id: `RES-${Date.now()}`, rank1SchoolId: '', rank2SchoolId: '', rank3SchoolId: '' });
+                      setEditingResult({ id: `RES-${Date.now()}`, rank1SchoolId: '', rank2SchoolId: '', rank3SchoolId: '', rank3SchoolId2: '' });
                       setResSportId(''); setResAgeGroup(''); setResAthEvent('');
                   }
                 }}
@@ -1342,29 +1436,115 @@ const AdminPage: React.FC = () => {
 
         {activeTab !== 'feedback-view' && activeTab !== 'overview' && (
           <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="text-slate-500 text-[10px] uppercase font-black border-b bg-slate-50/50">
-                  <th className="px-8 py-5 w-32 text-center">{activeTab === 'results' || activeTab === 'certificates' ? 'กีฬา' : 'ที่'}</th>
-                  <th className="px-8 py-5">{activeTab === 'results' || activeTab === 'certificates' ? 'รุ่น / รายการ' : 'ชื่อรายการ'}</th>
-                  <th className="px-8 py-5">
-                    {activeTab === 'sportTypes' ? 'เอกสาร/เทมเพลต' : (activeTab === 'certificates' ? 'กำหนดเลขที่เกียรติบัตร' : (activeTab === 'results' ? 'สรุปผู้ชนะ' : 'รายละเอียด'))}
-                  </th>
-                  <th className="px-8 py-5 text-center">จัดการ</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {activeTab === 'accounts' && filteredSchools.map((s) => (
-                  <tr key={s.id} className="hover:bg-blue-50/20 transition-all">
-                    <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
-                    <td className="px-8 py-5 font-bold text-slate-800">{s.name}</td>
-                    <td className="px-8 py-5 font-mono text-xs text-slate-500">User: {s.username} | Pass: {s.password}</td>
-                    <td className="px-8 py-5 text-center flex justify-center gap-2">
-                      <button onClick={() => { setEditingSchool(s); setIsAddingNew(false); }} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg"><Edit2 size={18} /></button>
-                      <button onClick={() => handleDeleteItem('deleteAccount', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-slate-500 text-[10px] uppercase font-black border-b bg-slate-50/50">
+                    <th className="px-8 py-5 w-24 text-center">{activeTab === 'results' || activeTab === 'certificates' ? 'กีฬา' : 'ที่'}</th>
+                    <th className="px-8 py-5">{activeTab === 'results' || activeTab === 'certificates' ? 'รุ่น / รายการ' : (activeTab === 'accounts' ? 'ชื่อโรงเรียน' : 'ชื่อรายการ')}</th>
+                    <th className="px-8 py-5">
+                      {activeTab === 'sportTypes' ? 'เอกสาร/เทมเพลต' : (activeTab === 'certificates' ? 'กำหนดเลขที่เกียรติบัตร' : (activeTab === 'results' ? 'สรุปผู้ชนะ' : (activeTab === 'accounts' ? 'ชื่อผู้ใช้ / รหัสผ่าน' : 'รายละเอียด')))}
+                    </th>
+                    {activeTab === 'accounts' && (
+                      <th className="px-6 py-5 min-w-[280px]">
+                        <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-slate-500">
+                          <TrophyIcon size={14} className="text-amber-500" />
+                          <span>สนามกีฬาที่รับผิดชอบ (Live Score)</span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-normal">
+                          เพิ่ม / ลบ / แก้ไข ได้หลายชนิดกีฬา
+                        </div>
+                      </th>
+                    )}
+                    <th className="px-8 py-5 text-center">จัดการ</th>
                   </tr>
-                ))}
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {activeTab === 'accounts' && filteredSchools.map((s, idx) => (
+                    <tr key={s.id} className="hover:bg-blue-50/20 transition-all">
+                      <td className="px-8 py-5 font-black text-slate-300 text-center">{idx + 1}</td>
+                      <td className="px-8 py-5">
+                        <div className="font-bold text-slate-800 text-sm">{s.name}</div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">ID: {s.id}</div>
+                      </td>
+                      <td className="px-8 py-5 font-mono text-xs text-slate-500">
+                        <div className="inline-flex flex-col sm:flex-row sm:items-center gap-1.5">
+                          <span className="bg-slate-100 px-2.5 py-1 rounded-lg text-slate-700 font-bold">User: {s.username}</span>
+                          <span className="bg-slate-100 px-2.5 py-1 rounded-lg text-slate-500">Pass: {s.password}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-5 min-w-[280px]">
+                        {(() => {
+                          const schoolSports = parseResponsibleSports(s.responsibleSport);
+                          const availableSports = sportTypes.filter(st => !schoolSports.includes(st.name));
+                          return (
+                            <div className="space-y-2">
+                              {schoolSports.length > 0 ? (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {schoolSports.map((sp) => (
+                                    <span
+                                      key={sp}
+                                      className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200/90 rounded-lg text-xs font-black text-emerald-800 shadow-xs hover:border-emerald-300 transition-all group"
+                                    >
+                                      <span>🏟️ {sp}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveSchoolSport(s.id, sp)}
+                                        className="text-slate-400 hover:text-red-500 hover:bg-red-50 p-0.5 rounded transition-colors"
+                                        title={`ลบ ${sp} ออกจากสนามที่รับผิดชอบ`}
+                                      >
+                                        <X size={13} />
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="text-xs text-slate-400 italic flex items-center gap-1">
+                                  <span>ยังไม่ได้ระบุสนามกีฬา</span>
+                                </div>
+                              )}
+
+                              <div className="flex items-center gap-2">
+                                <div className="relative">
+                                  <select
+                                    value=""
+                                    onChange={(e) => {
+                                      if (e.target.value) {
+                                        handleAddSchoolSport(s.id, e.target.value);
+                                      }
+                                    }}
+                                    className="px-2.5 py-1.5 text-xs font-bold bg-white hover:bg-slate-50 border border-slate-200 hover:border-emerald-300 rounded-lg text-slate-700 outline-none cursor-pointer transition-all shadow-xs"
+                                    title="เลือกเพื่อเพิ่มสนามกีฬาที่รับผิดชอบ"
+                                  >
+                                    <option value="">+ เพิ่มชนิดกีฬา/สนาม...</option>
+                                    {availableSports.map((st) => (
+                                      <option key={st.id} value={st.name}>
+                                        + 🏟️ {st.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                {schoolSports.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleClearAllSchoolSports(s.id)}
+                                    className="text-[10px] font-bold text-slate-400 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50 transition-colors"
+                                    title="ยกเลิกสนามกีฬาที่รับผิดชอบทั้งหมดของโรงเรียนนี้"
+                                  >
+                                    ลบทั้งหมด
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-8 py-5 text-center flex justify-center gap-2">
+                        <button onClick={() => { setEditingSchool(s); setIsAddingNew(false); }} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors" title="แก้ไขข้อมูลบัญชี"><Edit2 size={18} /></button>
+                        <button onClick={() => handleDeleteItem('deleteAccount', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors" title="ลบบัญชี"><Trash2 size={18} /></button>
+                      </td>
+                    </tr>
+                  ))}
                 {activeTab === 'sportTypes' && filteredSportTypes.map((s) => (
                   <tr key={s.id} className="hover:bg-emerald-50/20 transition-all">
                     <td className="px-8 py-5 font-bold text-slate-300 text-center">#</td>
@@ -1444,7 +1624,10 @@ const AdminPage: React.FC = () => {
                     </td>
                     <td className="px-8 py-5">
                       <div className="flex items-center gap-2 font-black text-amber-600"><Medal size={16} className="text-yellow-500" /> {r.rank1SchoolName || '-'}</div>
-                      <div className="text-[10px] text-slate-400 mt-1">2: {r.rank2SchoolName || '-'} | 3: {r.rank3SchoolName || '-'}</div>
+                      <div className="text-[10px] text-slate-400 mt-1">
+                        2: {r.rank2SchoolName || '-'} | 3: {r.rank3SchoolName || '-'}
+                        {r.rank3SchoolName2 && <span className="text-orange-500 font-bold">, {r.rank3SchoolName2} (ร่วม)</span>}
+                      </div>
                     </td>
                     <td className="px-8 py-5 text-center flex justify-center gap-2">
                       <button onClick={() => { setEditingResult(r); setIsAddingNew(false); setResSportId(r.sportId); setResAgeGroup(r.ageGroup || ''); setResAthEvent(r.athleticsEvent || ''); }} className="p-2 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors"><Edit2 size={18} /></button>
@@ -1493,29 +1676,35 @@ const AdminPage: React.FC = () => {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </div>
 
       {replyingFeedback && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
-            <div className="p-8 bg-violet-600 text-white flex justify-between items-center">
-              <div>
-                <h4 className="font-black text-2xl">ตอบกลับข้อเสนอแนะ</h4>
-                <p className="text-white/70 text-xs font-bold uppercase tracking-widest mt-1">Feedback Management</p>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 md:p-6 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
+          <div className="bg-white w-full max-w-md sm:max-w-lg max-h-[92vh] sm:max-h-[88vh] rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 my-auto border border-slate-100">
+            <div className="px-6 py-5 sm:px-8 sm:py-6 bg-violet-600 text-white flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 sm:p-2.5 rounded-xl sm:rounded-2xl">
+                  <MessageSquare size={24} className="text-white" />
+                </div>
+                <div>
+                  <h4 className="font-black text-xl sm:text-2xl leading-tight">ตอบกลับข้อเสนอแนะ</h4>
+                  <p className="text-white/80 text-[10px] sm:text-xs font-bold uppercase tracking-wider mt-0.5">Feedback Management</p>
+                </div>
               </div>
-              <button onClick={() => setReplyingFeedback(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={28} /></button>
+              <button onClick={() => setReplyingFeedback(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors" title="ปิดหน้าต่าง"><X size={22} /></button>
             </div>
-            <form onSubmit={handleSaveReply} className="p-8 space-y-6">
-              <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">ข้อความต้นฉบับ จาก {replyingFeedback.schoolName}</p>
+            <form onSubmit={handleSaveReply} className="p-5 sm:p-7 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
+              <div className="bg-slate-50 p-4 sm:p-5 rounded-2xl sm:rounded-3xl border border-slate-100">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">ข้อความต้นฉบับ จาก {replyingFeedback.schoolName}</p>
                 <p className="text-sm font-bold text-slate-800 mb-1">{replyingFeedback.subject}</p>
                 <p className="text-xs text-slate-500 leading-relaxed">{replyingFeedback.details}</p>
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">อัปเดตสถานะ</label>
-                <select required value={replyStatus} onChange={(e) => setReplyStatus(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-violet-500/10 transition-all cursor-pointer">
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">อัปเดตสถานะ</label>
+                <select required value={replyStatus} onChange={(e) => setReplyStatus(e.target.value)} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-violet-500/10 focus:border-violet-500 transition-all text-sm sm:text-base cursor-pointer">
                   <option value="รอดำเนินการ">รอดำเนินการ</option>
                   <option value="กำลังดำเนินการ">กำลังดำเนินการ</option>
                   <option value="เสร็จสิ้น">แก้ไขแล้ว / เสร็จสิ้น</option>
@@ -1523,129 +1712,310 @@ const AdminPage: React.FC = () => {
                 </select>
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ข้อความตอบกลับไปยังโรงเรียน</label>
-                <textarea required value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="ตอบกลับความคืบหน้า..." className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl h-32 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-violet-500/10 transition-all resize-none" />
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ข้อความตอบกลับไปยังโรงเรียน</label>
+                <textarea required value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="ตอบกลับความคืบหน้า..." className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl h-24 sm:h-28 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-violet-500/10 focus:border-violet-500 transition-all text-sm sm:text-base resize-none" />
               </div>
-              <button type="submit" className="w-full py-5 bg-violet-600 text-white rounded-2xl font-black shadow-xl shadow-violet-100 flex items-center justify-center gap-2 hover:bg-violet-700 transition-all active:scale-95">
-                <Save size={20} /> บันทึกและส่งคำตอบ
-              </button>
+              <div className="pt-2">
+                <button type="submit" className="w-full py-3.5 sm:py-4 bg-violet-600 text-white rounded-xl sm:rounded-2xl font-black shadow-xl shadow-violet-100 flex items-center justify-center gap-2 hover:bg-violet-700 active:scale-95 transition-all text-sm sm:text-base">
+                  <Save size={18} /> บันทึกและส่งคำตอบ
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {editingSchool && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
-            <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-blue-600' : 'bg-blue-800'}`}>
-              <h4 className="font-black text-2xl">จัดการบัญชีโรงเรียน</h4>
-              <button onClick={() => setEditingSchool(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 md:p-6 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
+          <div className="bg-white w-full max-w-md sm:max-w-lg max-h-[92vh] sm:max-h-[88vh] rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 my-auto border border-slate-100">
+            <div className={`px-6 py-5 sm:px-8 sm:py-6 text-white flex justify-between items-center shrink-0 ${isAddingNew ? 'bg-blue-600' : 'bg-blue-800'}`}>
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 sm:p-2.5 rounded-xl sm:rounded-2xl">
+                  <SchoolIcon size={24} className="text-white" />
+                </div>
+                <div>
+                  <h4 className="font-black text-xl sm:text-2xl leading-tight">จัดการบัญชีโรงเรียน</h4>
+                  <p className="text-white/80 text-[10px] sm:text-xs font-bold uppercase tracking-wider mt-0.5">
+                    {isAddingNew ? 'เพิ่มโรงเรียนใหม่' : 'แก้ไขข้อมูลบัญชี'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setEditingSchool(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors" title="ปิดหน้าต่าง"><X size={22} /></button>
             </div>
-            <form onSubmit={handleSaveAccount} className="p-8 space-y-5">
+            <form onSubmit={handleSaveAccount} className="p-5 sm:p-7 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อโรงเรียน</label>
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อโรงเรียน <span className="text-red-500">*</span></label>
                 <div className="relative">
                   <SchoolIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                  <input type="text" required value={editingSchool.name} onChange={(e) => setEditingSchool({...editingSchool, name: e.target.value})} className="w-full pl-12 pr-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" placeholder="ระบุชื่อโรงเรียน" />
+                  <input type="text" required value={editingSchool.name} onChange={(e) => setEditingSchool({...editingSchool, name: e.target.value})} className="w-full pl-12 pr-4 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm sm:text-base" placeholder="ระบุชื่อโรงเรียน" />
                 </div>
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">Username</label>
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">Username <span className="text-red-500">*</span></label>
                 <div className="relative">
                   <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                  <input type="text" required value={editingSchool.username} onChange={(e) => setEditingSchool({...editingSchool, username: e.target.value})} className="w-full pl-12 pr-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" placeholder="username สำหรับเข้าสู่ระบบ" />
+                  <input type="text" required value={editingSchool.username} onChange={(e) => setEditingSchool({...editingSchool, username: e.target.value})} className="w-full pl-12 pr-4 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm sm:text-base" placeholder="username สำหรับเข้าสู่ระบบ" />
                 </div>
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">Password</label>
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">Password <span className="text-red-500">*</span></label>
                 <div className="relative">
                   <EyeOff className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                  <input type="text" required value={editingSchool.password} onChange={(e) => setEditingSchool({...editingSchool, password: e.target.value})} className="w-full pl-12 pr-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" placeholder="password สำหรับเข้าสู่ระบบ" />
+                  <input type="text" required value={editingSchool.password} onChange={(e) => setEditingSchool({...editingSchool, password: e.target.value})} className="w-full pl-12 pr-4 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm sm:text-base" placeholder="password สำหรับเข้าสู่ระบบ" />
                 </div>
               </div>
-              <button type="submit" className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black shadow-xl shadow-blue-100 flex items-center justify-center gap-3 hover:bg-blue-700 transition-all active:scale-95">
-                <Save size={20} /> บันทึกข้อมูลบัญชี
-              </button>
+              <div>
+                {(() => {
+                  const modalSports = parseResponsibleSports(editingSchool.responsibleSport);
+                  const availableSports = sportTypes.filter(st => !modalSports.includes(st.name));
+
+                  const handleAddModalSport = (sportName: string) => {
+                    if (!sportName || modalSports.includes(sportName)) return;
+                    const updated = [...modalSports, sportName];
+                    setEditingSchool({
+                      ...editingSchool,
+                      responsibleSport: formatResponsibleSports(updated)
+                    });
+                  };
+
+                  const handleRemoveModalSport = (sportName: string) => {
+                    const updated = modalSports.filter(s => s !== sportName);
+                    setEditingSchool({
+                      ...editingSchool,
+                      responsibleSport: formatResponsibleSports(updated)
+                    });
+                  };
+
+                  const handleClearModalSports = () => {
+                    setEditingSchool({
+                      ...editingSchool,
+                      responsibleSport: ''
+                    });
+                  };
+
+                  return (
+                    <div className="bg-slate-50 p-4 sm:p-5 rounded-2xl border border-slate-200/80 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Trophy size={18} className="text-amber-500" />
+                          <label className="text-xs font-black text-slate-700 uppercase tracking-wider">
+                            สนามกีฬาที่รับผิดชอบ (Live Score)
+                          </label>
+                        </div>
+                        <span className="text-[11px] font-black px-2.5 py-0.5 bg-amber-100 text-amber-800 rounded-full">
+                          {modalSports.length} ชนิดกีฬา
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+                        เลือกชนิดกีฬาที่โรงเรียนนี้เป็นเจ้าภาพ/รับผิดชอบ สามารถเพิ่มได้หลายชนิดกีฬาเพื่อเปิดสิทธิ์บันทึกรายงานผล Live score
+                      </p>
+
+                      {/* รายการกีฬาที่เลือกไว้ */}
+                      <div className="min-h-[50px] p-3 bg-white border border-slate-200 rounded-xl flex flex-wrap items-center gap-2">
+                        {modalSports.length > 0 ? (
+                          modalSports.map((sp) => (
+                            <span
+                              key={sp}
+                              className="inline-flex items-center gap-1.5 pl-3 pr-2 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-black shadow-xs hover:border-emerald-300 transition-all"
+                            >
+                              <span>🏟️ {sp}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveModalSport(sp)}
+                                className="text-emerald-500 hover:text-red-500 hover:bg-emerald-100 p-0.5 rounded transition-colors"
+                                title={`ลบ ${sp}`}
+                              >
+                                <X size={14} />
+                              </button>
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-xs text-slate-400 italic px-1">
+                            ยังไม่มีชนิดกีฬาที่เลือก (เลือกจากเมนูด้านล่างเพื่อเพิ่ม)
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Dropdown เพิ่มชนิดกีฬา */}
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                        <select
+                          id="modalSportSelect"
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAddModalSport(e.target.value);
+                            }
+                          }}
+                          className="flex-1 px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-bold text-slate-700 outline-none focus:ring-4 focus:ring-blue-500/10 cursor-pointer"
+                        >
+                          <option value="">-- เลือกเพื่อเพิ่มสนามกีฬา / ชนิดกีฬา --</option>
+                          {availableSports.map((st) => (
+                            <option key={st.id} value={st.name}>
+                              + 🏟️ {st.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        {modalSports.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleClearModalSports}
+                            className="px-3 py-2 text-xs font-bold text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-200 rounded-xl transition-colors whitespace-nowrap"
+                          >
+                            ลบทั้งหมด
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="pt-2">
+                <button type="submit" className="w-full py-3.5 sm:py-4 bg-blue-600 text-white rounded-xl sm:rounded-2xl font-black shadow-xl shadow-blue-100 flex items-center justify-center gap-2 hover:bg-blue-700 active:scale-95 transition-all text-sm sm:text-base">
+                  <Save size={18} /> บันทึกข้อมูลบัญชี
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {editingAgeGroup && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
-            <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-indigo-600' : 'bg-indigo-800'}`}>
-              <h4 className="font-black text-2xl">จัดการรุ่นอายุและเพศ</h4>
-              <button onClick={() => setEditingAgeGroup(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 md:p-6 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
+          <div className="bg-white w-full max-w-md sm:max-w-lg max-h-[92vh] sm:max-h-[88vh] rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 my-auto border border-slate-100">
+            <div className={`px-6 py-5 sm:px-8 sm:py-6 text-white flex justify-between items-center shrink-0 ${isAddingNew ? 'bg-indigo-600' : 'bg-indigo-800'}`}>
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 sm:p-2.5 rounded-xl sm:rounded-2xl">
+                  <Trophy size={24} className="text-white" />
+                </div>
+                <div>
+                  <h4 className="font-black text-xl sm:text-2xl leading-tight">จัดการรุ่นอายุและเพศ</h4>
+                  <p className="text-white/80 text-[10px] sm:text-xs font-bold uppercase tracking-wider mt-0.5">
+                    {isAddingNew ? 'เพิ่มรุ่นอายุใหม่' : 'แก้ไขรุ่นอายุและเพศ'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setEditingAgeGroup(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors" title="ปิดหน้าต่าง"><X size={22} /></button>
             </div>
-            <form onSubmit={handleSaveAgeGroup} className="p-8 space-y-5">
+            <form onSubmit={handleSaveAgeGroup} className="p-5 sm:p-7 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อรุ่นอายุ</label>
-                <input type="text" required value={editingAgeGroup.age} onChange={(e) => setEditingAgeGroup({...editingAgeGroup, age: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" placeholder="เช่น อนุบาล, ไม่เกิน 12 ปี" />
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อรุ่นอายุ <span className="text-red-500">*</span></label>
+                <input type="text" required value={editingAgeGroup.age} onChange={(e) => setEditingAgeGroup({...editingAgeGroup, age: e.target.value})} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all text-sm sm:text-base" placeholder="เช่น อนุบาล, ไม่เกิน 12 ปี" />
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">เพศ</label>
-                <select required value={editingAgeGroup.gender} onChange={(e) => setEditingAgeGroup({...editingAgeGroup, gender: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all appearance-none cursor-pointer">
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">เพศ <span className="text-red-500">*</span></label>
+                <select required value={editingAgeGroup.gender} onChange={(e) => setEditingAgeGroup({...editingAgeGroup, gender: e.target.value})} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all text-sm sm:text-base appearance-none cursor-pointer">
                   <option value="ชาย">ชาย</option>
                   <option value="หญิง">หญิง</option>
                   <option value="ทั่วไป">ทั่วไป (คละชาย-หญิง)</option>
                 </select>
               </div>
-              <button type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl shadow-indigo-100 flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all active:scale-95">
-                <Save size={20} /> บันทึกรุ่นอายุ
-              </button>
+              <div className="pt-2">
+                <button type="submit" className="w-full py-3.5 sm:py-4 bg-indigo-600 text-white rounded-xl sm:rounded-2xl font-black shadow-xl shadow-indigo-100 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-95 transition-all text-sm sm:text-base">
+                  <Save size={18} /> บันทึกรุ่นอายุ
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {editingSportType && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
-            <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-emerald-600' : 'bg-emerald-800'}`}>
-              <h4 className="font-black text-2xl">จัดการชนิดกีฬา</h4>
-              <button onClick={() => setEditingSportType(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
-            </div>
-            <form onSubmit={handleSaveSportType} className="p-8 space-y-5">
-              <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อชนิดกีฬา</label>
-                <input type="text" required value={editingSportType.name} onChange={(e) => setEditingSportType({...editingSportType, name: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-emerald-500/10 transition-all" placeholder="ระบุชื่อกีฬา" />
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
+          <div className="bg-white w-full max-w-[95vw] sm:max-w-md md:max-w-lg max-h-[90vh] rounded-3xl sm:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col my-auto border border-slate-100 animate-in zoom-in-95 duration-200">
+            <div className={`px-5 py-4 sm:px-7 sm:py-5 text-white flex justify-between items-center shrink-0 ${isAddingNew ? 'bg-gradient-to-r from-emerald-600 to-teal-700' : 'bg-gradient-to-r from-emerald-700 to-teal-800'}`}>
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 sm:p-2.5 rounded-xl sm:rounded-2xl shadow-inner">
+                  <Dribbble size={22} className="text-white" />
+                </div>
+                <div>
+                  <h4 className="font-black text-lg sm:text-xl leading-tight">จัดการชนิดกีฬา</h4>
+                  <p className="text-white/80 text-[10px] sm:text-xs font-bold uppercase tracking-wider mt-0.5">
+                    {isAddingNew ? 'เพิ่มชนิดกีฬาใหม่' : 'แก้ไขข้อมูลชนิดกีฬา'}
+                  </p>
+                </div>
               </div>
-              <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">คำอธิบาย</label>
-                <textarea value={editingSportType.description} onChange={(e) => setEditingSportType({...editingSportType, description: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl h-24 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-emerald-500/10 transition-all" placeholder="ระบุคำอธิบายย่อย" />
-              </div>
-              <button type="submit" className="w-full py-5 bg-emerald-600 text-white rounded-2xl font-black shadow-xl shadow-emerald-100 flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all active:scale-95">
-                <Save size={20} /> บันทึกข้อมูลกีฬา
+              <button 
+                onClick={() => setEditingSportType(null)} 
+                className="p-2 hover:bg-white/20 rounded-xl transition-colors active:scale-95"
+                title="ปิดหน้าต่าง"
+              >
+                <X size={20} />
               </button>
+            </div>
+            <form onSubmit={handleSaveSportType} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
+              <div>
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">
+                  ชื่อชนิดกีฬา <span className="text-red-500">*</span>
+                </label>
+                <input 
+                  type="text" 
+                  required 
+                  value={editingSportType.name} 
+                  onChange={(e) => setEditingSportType({...editingSportType, name: e.target.value})} 
+                  className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all text-sm sm:text-base" 
+                  placeholder="ระบุชื่อกีฬา เช่น ฟุตบอล, วอลเลย์บอล" 
+                />
+              </div>
+              <div>
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">
+                  คำอธิบาย
+                </label>
+                <textarea 
+                  value={editingSportType.description} 
+                  onChange={(e) => setEditingSportType({...editingSportType, description: e.target.value})} 
+                  className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl h-20 sm:h-24 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all text-sm sm:text-base resize-none" 
+                  placeholder="ระบุคำอธิบายย่อยหรือข้อกำหนดสังเขป (ถ้ามี)" 
+                />
+              </div>
+              <div className="pt-2">
+                <button 
+                  type="submit" 
+                  className="w-full py-3.5 sm:py-4 bg-emerald-600 text-white rounded-xl sm:rounded-2xl font-black shadow-xl shadow-emerald-100 flex items-center justify-center gap-2 hover:bg-emerald-700 active:scale-95 transition-all text-sm sm:text-base"
+                >
+                  <Save size={18} /> บันทึกข้อมูลกีฬา
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {editingAthletics && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
-            <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-orange-600' : 'bg-orange-800'}`}>
-              <h4 className="font-black text-2xl">จัดการรายการกรีฑา</h4>
-              <button onClick={() => setEditingAthletics(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={24} /></button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 md:p-6 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
+          <div className="bg-white w-full max-w-md sm:max-w-lg max-h-[92vh] sm:max-h-[88vh] rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 my-auto border border-slate-100">
+            <div className={`px-6 py-5 sm:px-8 sm:py-6 text-white flex justify-between items-center shrink-0 ${isAddingNew ? 'bg-orange-600' : 'bg-orange-800'}`}>
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 sm:p-2.5 rounded-xl sm:rounded-2xl">
+                  <PersonStanding size={24} className="text-white" />
+                </div>
+                <div>
+                  <h4 className="font-black text-xl sm:text-2xl leading-tight">จัดการรายการกรีฑา</h4>
+                  <p className="text-white/80 text-[10px] sm:text-xs font-bold uppercase tracking-wider mt-0.5">
+                    {isAddingNew ? 'เพิ่มรายการกรีฑาใหม่' : 'แก้ไขรายการกรีฑา'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setEditingAthletics(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors" title="ปิดหน้าต่าง"><X size={22} /></button>
             </div>
-            <form onSubmit={handleSaveAthletics} className="p-8 space-y-5">
+            <form onSubmit={handleSaveAthletics} className="p-5 sm:p-7 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">เลขที่รายการ (Event No.)</label>
-                <input type="text" required value={editingAthletics.eventNo} onChange={(e) => setEditingAthletics({...editingAthletics, eventNo: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all" placeholder="เช่น 001, 102" />
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">เลขที่รายการ (Event No.) <span className="text-red-500">*</span></label>
+                <input type="text" required value={editingAthletics.eventNo} onChange={(e) => setEditingAthletics({...editingAthletics, eventNo: e.target.value})} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all text-sm sm:text-base" placeholder="เช่น 001, 102" />
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อรายการแข่งขัน</label>
-                <input type="text" required value={editingAthletics.name} onChange={(e) => setEditingAthletics({...editingAthletics, name: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all" placeholder="เช่น วิ่ง 100 เมตร, กระโดดไกล" />
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อรายการแข่งขัน <span className="text-red-500">*</span></label>
+                <input type="text" required value={editingAthletics.name} onChange={(e) => setEditingAthletics({...editingAthletics, name: e.target.value})} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all text-sm sm:text-base" placeholder="เช่น วิ่ง 100 เมตร, กระโดดไกล" />
               </div>
               <div>
-                <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">คำอธิบายเพิ่มเติม</label>
-                <textarea value={editingAthletics.description} onChange={(e) => setEditingAthletics({...editingAthletics, description: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl h-24 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all" placeholder="ระบุรายละเอียด (ถ้ามี)" />
+                <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">คำอธิบายเพิ่มเติม</label>
+                <textarea value={editingAthletics.description} onChange={(e) => setEditingAthletics({...editingAthletics, description: e.target.value})} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl h-24 sm:h-28 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all text-sm sm:text-base resize-none" placeholder="ระบุรายละเอียด (ถ้ามี)" />
               </div>
-              <button type="submit" className="w-full py-5 bg-orange-600 text-white rounded-2xl font-black shadow-xl shadow-orange-100 flex items-center justify-center gap-2 hover:bg-orange-700 transition-all active:scale-95">
-                <Save size={20} /> บันทึกรายการกรีฑา
-              </button>
+              <div className="pt-2">
+                <button type="submit" className="w-full py-3.5 sm:py-4 bg-orange-600 text-white rounded-xl sm:rounded-2xl font-black shadow-xl shadow-orange-100 flex items-center justify-center gap-2 hover:bg-orange-700 active:scale-95 transition-all text-sm sm:text-base">
+                  <Save size={18} /> บันทึกรายการกรีฑา
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -1706,29 +2076,121 @@ const AdminPage: React.FC = () => {
                       <p className="text-[10px] text-slate-400 italic">กรุณาเลือกรายการแข่งขันที่มีคนลงทะเบียน</p>
                     </div>
                   ) : (
-                    <div className="space-y-4 animate-in fade-in">
-                      <div>
-                        <label className="text-[10px] font-black text-amber-500 flex items-center gap-1 mb-2 px-1 uppercase tracking-widest"><Medal size={12} className="text-yellow-500" /> ชนะเลิศ (อันดับ 1)</label>
-                        <select required value={editingResult.rank1SchoolId} onChange={(e) => setEditingResult({...editingResult, rank1SchoolId: e.target.value})} className="w-full px-5 py-3 bg-white border-2 border-amber-100 rounded-2xl font-bold text-slate-800 outline-none focus:border-amber-500 transition-all">
-                          <option value="">-- เลือกโรงเรียน --</option>
-                          {resRegisteredSchools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-black text-slate-400 flex items-center gap-1 mb-2 px-1 uppercase tracking-widest"><Medal size={12} className="text-slate-400" /> รองชนะเลิศอันดับ 1 (อันดับ 2)</label>
-                        <select value={editingResult.rank2SchoolId} onChange={(e) => setEditingResult({...editingResult, rank2SchoolId: e.target.value})} className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-slate-500/10 transition-all">
-                          <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
-                          {resRegisteredSchools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-black text-orange-400 flex items-center gap-1 mb-2 px-1 uppercase tracking-widest"><Medal size={12} className="text-orange-400" /> รองชนะเลิศอันดับ 2 (อันดับ 3)</label>
-                        <select value={editingResult.rank3SchoolId} onChange={(e) => setEditingResult({...editingResult, rank3SchoolId: e.target.value})} className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all">
-                          <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
-                          {resRegisteredSchools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
-                      </div>
-                    </div>
+                    (() => {
+                      const r1 = editingResult.rank1SchoolId || '';
+                      const r2 = editingResult.rank2SchoolId || '';
+                      const r3 = editingResult.rank3SchoolId || '';
+                      const r3_2 = editingResult.rank3SchoolId2 || '';
+
+                      // กรองเฉพาะโรงเรียนที่ลงทะเบียน และเมื่อเลือกรับรางวัลใดแล้วจะไม่แสดงใน Dropdown อื่นอีก
+                      const rank1Options = resRegisteredSchools.filter(s => s.id === r1 || (s.id !== r2 && s.id !== r3 && s.id !== r3_2));
+                      const rank2Options = resRegisteredSchools.filter(s => s.id === r2 || (s.id !== r1 && s.id !== r3 && s.id !== r3_2));
+                      const rank3Options = resRegisteredSchools.filter(s => s.id === r3 || (s.id !== r1 && s.id !== r2 && s.id !== r3_2));
+                      const rank3_2Options = resRegisteredSchools.filter(s => s.id === r3_2 || (s.id !== r1 && s.id !== r2 && s.id !== r3));
+
+                      return (
+                        <div className="space-y-4 animate-in fade-in">
+                          {/* รางวัลชนะเลิศ (อันดับ 1) */}
+                          <div>
+                            <div className="flex items-center justify-between mb-2 px-1">
+                              <label className="text-[10px] font-black text-amber-500 flex items-center gap-1 uppercase tracking-widest">
+                                <Medal size={12} className="text-yellow-500" /> ชนะเลิศ (อันดับ 1 / เหรียญทอง) <span className="text-red-500">*</span>
+                              </label>
+                            </div>
+                            <select 
+                              required 
+                              value={editingResult.rank1SchoolId || ''} 
+                              onChange={(e) => setEditingResult({...editingResult, rank1SchoolId: e.target.value})} 
+                              className="w-full px-5 py-3 bg-white border-2 border-amber-200 rounded-2xl font-bold text-slate-800 outline-none focus:border-amber-500 transition-all cursor-pointer"
+                            >
+                              <option value="">-- เลือกโรงเรียนชนะเลิศ --</option>
+                              {rank1Options.map(s => <option key={s.id} value={s.id}>🥇 {s.name}</option>)}
+                            </select>
+                          </div>
+
+                          {/* รางวัลรองชนะเลิศอันดับ 1 (อันดับ 2) */}
+                          <div>
+                            <div className="flex items-center justify-between mb-2 px-1">
+                              <label className="text-[10px] font-black text-slate-500 flex items-center gap-1 uppercase tracking-widest">
+                                <Medal size={12} className="text-slate-400" /> รองชนะเลิศอันดับ 1 (อันดับ 2 / เหรียญเงิน)
+                              </label>
+                              {editingResult.rank2SchoolId && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingResult({ ...editingResult, rank2SchoolId: '', rank2SchoolName: '' })}
+                                  className="text-[10px] font-bold text-red-500 hover:underline"
+                                >
+                                  ล้างค่า
+                                </button>
+                              )}
+                            </div>
+                            <select 
+                              value={editingResult.rank2SchoolId || ''} 
+                              onChange={(e) => setEditingResult({...editingResult, rank2SchoolId: e.target.value})} 
+                              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-slate-500/10 transition-all cursor-pointer"
+                            >
+                              <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
+                              {rank2Options.map(s => <option key={s.id} value={s.id}>🥈 {s.name}</option>)}
+                            </select>
+                          </div>
+
+                          {/* รางวัลรองชนะเลิศอันดับ 2 (อันดับ 3) */}
+                          <div>
+                            <div className="flex items-center justify-between mb-2 px-1">
+                              <label className="text-[10px] font-black text-orange-500 flex items-center gap-1 uppercase tracking-widest">
+                                <Medal size={12} className="text-orange-400" /> รองชนะเลิศอันดับ 2 (อันดับ 3 / เหรียญทองแดง)
+                              </label>
+                              {editingResult.rank3SchoolId && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingResult({ ...editingResult, rank3SchoolId: '', rank3SchoolName: '' })}
+                                  className="text-[10px] font-bold text-red-500 hover:underline"
+                                >
+                                  ล้างค่า
+                                </button>
+                              )}
+                            </div>
+                            <select 
+                              value={editingResult.rank3SchoolId || ''} 
+                              onChange={(e) => setEditingResult({...editingResult, rank3SchoolId: e.target.value})} 
+                              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all cursor-pointer"
+                            >
+                              <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
+                              {rank3Options.map(s => <option key={s.id} value={s.id}>🥉 {s.name}</option>)}
+                            </select>
+                          </div>
+
+                          {/* อันดับ 3 ร่วม (เหรียญทองแดง อีก 1 ทีม) */}
+                          <div className="p-3 bg-orange-50/70 rounded-2xl border border-orange-200/80 space-y-2">
+                            <div className="flex items-center justify-between px-1">
+                              <label className="text-[10px] font-black text-orange-600 flex items-center gap-1 uppercase tracking-widest">
+                                <Medal size={12} className="text-orange-600" /> รองชนะเลิศอันดับ 2 ร่วม (อันดับ 3 ร่วม - เหรียญทองแดง)
+                              </label>
+                              {editingResult.rank3SchoolId2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingResult({ ...editingResult, rank3SchoolId2: '', rank3SchoolName2: '' })}
+                                  className="text-[10px] font-bold text-red-500 hover:underline"
+                                >
+                                  ล้างค่า
+                                </button>
+                              )}
+                            </div>
+                            <select 
+                              value={editingResult.rank3SchoolId2 || ''} 
+                              onChange={(e) => setEditingResult({...editingResult, rank3SchoolId2: e.target.value})} 
+                              className="w-full px-5 py-3 bg-white border border-orange-300 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all cursor-pointer"
+                            >
+                              <option value="">-- เลือกโรงเรียนอันดับ 3 ร่วม (ถ้ามี) --</option>
+                              {rank3_2Options.map(s => <option key={s.id} value={s.id}>🥉 {s.name} (อันดับ 3 ร่วม)</option>)}
+                            </select>
+                            <p className="text-[10px] text-orange-700/80 px-1 font-medium">
+                              * เพิ่มโรงเรียนที่ได้รับเหรียญทองแดงอีก 1 ทีม (สำหรับรายการแข่งขันที่มีอันดับ 3 ร่วม)
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })()
                   )}
                 </div>
               </div>
