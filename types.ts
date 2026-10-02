@@ -120,6 +120,15 @@ export interface CompetitionResult {
   certTemplate?: string; // เทมเพลตเกียรติบัตร (Base64) - ยังคงไว้เพื่อความเข้ากันได้ แต่อาจไม่ได้ใช้จากจุดนี้
 }
 
+export interface MedalStanding {
+  schoolId: string;
+  schoolName: string;
+  gold: number;
+  silver: number;
+  bronze: number;
+  total: number;
+}
+
 export interface FeedbackRecord {
   id: string;
   schoolId: string;

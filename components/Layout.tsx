@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LogOut, LayoutDashboard, ClipboardList, School as SchoolIcon } from 'lucide-react';
+import { LogOut, LayoutDashboard, ClipboardList, School as SchoolIcon, Lock } from 'lucide-react';
 import { UserSession } from '../types';
 
 interface LayoutProps {
@@ -30,7 +30,7 @@ const Layout: React.FC<LayoutProps> = ({ children, session, onLogout, onNavigate
             </div>
           </div>
 
-          {session && (
+          {session ? (
             <div className="flex items-center gap-4">
               <div className="hidden md:flex items-center gap-2 bg-blue-800 px-3 py-1.5 rounded-full text-sm">
                 <SchoolIcon size={16} />
@@ -38,11 +38,33 @@ const Layout: React.FC<LayoutProps> = ({ children, session, onLogout, onNavigate
               </div>
               <button 
                 onClick={onLogout}
-                className="flex items-center gap-2 hover:bg-blue-800 p-2 rounded-lg transition-colors"
+                className="flex items-center gap-2 hover:bg-blue-800 p-2 rounded-lg transition-colors cursor-pointer"
                 title="ออกจากระบบ"
               >
                 <LogOut size={20} />
                 <span className="hidden sm:inline">ออกจากระบบ</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 sm:gap-3">
+              <button
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('open-overview-tab'));
+                }}
+                className="hidden sm:flex items-center gap-1.5 bg-blue-800/80 hover:bg-blue-800 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border border-blue-600"
+              >
+                <LayoutDashboard size={15} />
+                <span>ภาพรวมระบบ</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('open-login-tab'));
+                }}
+                className="flex items-center gap-2 bg-amber-400 hover:bg-amber-300 text-slate-900 px-4 py-1.5 rounded-xl text-xs sm:text-sm font-black shadow-md shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
+              >
+                <Lock size={15} />
+                <span>เข้าสู่ระบบ</span>
               </button>
             </div>
           )}

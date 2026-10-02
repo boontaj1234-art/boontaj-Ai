@@ -231,6 +231,22 @@ function doGet(e) {
       return createJsonResponse(profile);
     }
 
+    if (action === 'getAllSchoolProfiles') {
+      const sheet = getOrCreateSheet(ss, 'school_profiles');
+      const data = sheet.getDataRange().getValues();
+      const profiles = data.slice(1).map(r => ({
+        schoolId: String(r[0] || '').trim(),
+        directorName: r[1] || '',
+        schoolColors: r[2] || '',
+        staffCount: r[3] || '',
+        motto: r[4] || '',
+        phoneNumber: r[5] || '',
+        logo: r[6] || '',
+        responsibleSport: r[7] || ''
+      }));
+      return createJsonResponse(profiles);
+    }
+
     if (action === 'getFeedbacks') {
       const sheet = getOrCreateSheet(ss, 'feedback');
       const data = sheet.getDataRange().getValues();
