@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UserSession, SchoolProfile, Sport, Athlete, CompetitionResult, FeedbackRecord, School, parseResponsibleSports } from '../types';
+import { UserSession, SchoolProfile, Sport, Athlete, Coach, extractCoachesFromAthletes, CompetitionResult, FeedbackRecord, School, parseResponsibleSports } from '../types';
 import { SCRIPT_URL, ICON_MAP } from '../constants';
 import RegistrationPage from './RegistrationPage';
 import { 
@@ -440,6 +440,44 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     return style;
   };
 
+  const getCoachAwards = (coach: Coach, sportName: string) => {
+    const fullName = coach.fullName.trim().toLowerCase();
+    const schoolName = session.schoolName.trim().toLowerCase();
+    const sName = sportName.trim().toLowerCase();
+
+    const awards = issuedCertificates.filter(c => {
+      const cFullName = String(c.fullName || '').trim().toLowerCase();
+      const cSchoolName = String(c.schoolName || '').trim().toLowerCase();
+      const cSportName = String(c.sportName || '').trim().toLowerCase();
+      const cRank = String(c.rank || '').trim();
+
+      const matchName = cFullName === fullName || cFullName.includes(fullName) || fullName.includes(cFullName);
+      const matchSchool = cSchoolName === schoolName;
+      const matchSport = cSportName === sName;
+      const isCoach = cRank.includes('ครูผู้ฝึกสอน');
+
+      return matchName && matchSchool && matchSport && isCoach;
+    });
+
+    return awards.map(award => {
+      const rank = award.rank;
+      let style = { text: rank, color: 'bg-amber-50 text-amber-700 border-amber-200', iconColor: 'text-amber-500', certData: award };
+      if (rank.includes('ชนะเลิศ') && !rank.includes('รอง')) 
+        style = { ...style, color: 'bg-yellow-100 text-yellow-700 border-yellow-200', iconColor: 'text-yellow-500' };
+      else if (rank.includes('อันดับ 1')) 
+        style = { ...style, color: 'bg-slate-100 text-slate-700 border-slate-200', iconColor: 'text-slate-400' };
+      else if (rank.includes('อันดับ 2')) 
+        style = { ...style, color: 'bg-orange-100 text-orange-700 border-orange-200', iconColor: 'text-orange-500' };
+
+      return style;
+    });
+  };
+
+  const getCoachAwardStatus = (coach: Coach, sportName: string) => {
+    const awards = getCoachAwards(coach, sportName);
+    return awards.length > 0 ? awards[0] : null;
+  };
+
   const handlePrintSingleCertificate = (award: any) => {
     if (!selectedSportForView) return;
 
@@ -460,6 +498,11 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
 
     const cleanAthleticsEvent = award.athleticsEvent !== '-' ? award.athleticsEvent.replace(/^\d+\s+/, '') : '';
     const eventName = cleanAthleticsEvent ? `${award.sportName} (${cleanAthleticsEvent})` : award.sportName;
+
+    const isCoach = String(award.rank || '').includes('ครูผู้ฝึกสอน');
+    const achievementText = isCoach
+      ? (String(award.rank).startsWith('ครูผู้ฝึกสอน') ? award.rank : `ครูผู้ฝึกสอน ได้รับรางวัล ${award.rank}`)
+      : `ได้รับรางวัล ${award.rank}`;
 
     printWindow.document.write(`
       <html>
@@ -489,7 +532,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                 <div class="recipient-name">${award.fullName}</div>
                 <div class="school-name">${award.schoolName}</div>              
                 <div class="achievement-details">
-                  <div class="achievement-text">ได้รับรางวัล ${award.rank}</div>
+                  <div class="achievement-text">${achievementText}</div>
                   <div class="event-text">ประเภทกีฬา ${eventName} รุ่น${award.ageGroup}</div>
                 </div>
               </div>
@@ -510,8 +553,16 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
       .filter(status => status !== null)
       .map(status => status?.certData);
 
-    if (awardedAthletes.length === 0) {
-      Swal.fire('ไม่พบรายชื่อ', 'ยังไม่มีนักกีฬาที่ได้รับรางวัลในรายการนี้ที่ประกาศผลแล้ว', 'info');
+    const coachesInSport = extractCoachesFromAthletes(athletesInSport);
+    const awardedCoaches = coachesInSport
+      .flatMap(c => getCoachAwards(c, selectedSportForView.name))
+      .filter(status => Boolean(status && status.certData))
+      .map(status => status.certData);
+
+    const allAwarded = [...awardedAthletes, ...awardedCoaches];
+
+    if (allAwarded.length === 0) {
+      Swal.fire('ไม่พบรายชื่อ', 'ยังไม่มีนักกีฬาหรือครูผู้ฝึกสอนที่ได้รับรางวัลในรายการนี้ที่ประกาศผลแล้ว', 'info');
       return;
     }
 
@@ -526,9 +577,14 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
 
-    const certsHtml = awardedAthletes.map(award => {
+    const certsHtml = allAwarded.map(award => {
       const cleanAthleticsEvent = award.athleticsEvent !== '-' ? award.athleticsEvent.replace(/^\d+\s+/, '') : '';
       const eventName = cleanAthleticsEvent ? `${award.sportName} (${cleanAthleticsEvent})` : award.sportName;
+
+      const isCoach = String(award.rank || '').includes('ครูผู้ฝึกสอน');
+      const achievementText = isCoach
+        ? (String(award.rank).startsWith('ครูผู้ฝึกสอน') ? award.rank : `ครูผู้ฝึกสอน ได้รับรางวัล ${award.rank}`)
+        : `ได้รับรางวัล ${award.rank}`;
 
       return `
         <div class="certificate-page">
@@ -539,7 +595,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
               <div class="recipient-name">${award.fullName}</div>
               <div class="school-name">${award.schoolName}</div>              
               <div class="achievement-details">
-                <div class="achievement-text">ได้รับรางวัล ${award.rank}</div>
+                <div class="achievement-text">${achievementText}</div>
                 <div class="event-text">ประเภทกีฬา ${eventName} รุ่น${award.ageGroup}</div>
               </div>
             </div>
@@ -734,6 +790,42 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     const sport = sportsList.find(s => s.name === activeSportName);
     const sportId = sport ? sport.id : '';
 
+    // ตรวจสอบความซ้ำซ้อนของรายการผลการแข่งขัน
+    const isAth = activeSportName.includes('กรีฑา');
+    const duplicate = resultsList.find(r => {
+      if (editingLiveResult?.id && r.id === editingLiveResult.id) return false;
+      const matchSport = r.sportId === sportId || r.sportName === activeSportName;
+      const matchAge = (r.ageGroup || '').trim().toLowerCase() === liveAgeGroup.trim().toLowerCase();
+      if (isAth) {
+        if (!liveAthEvent) return false;
+        return matchSport && matchAge && (r.athleticsEvent || '').trim().toLowerCase() === liveAthEvent.trim().toLowerCase();
+      }
+      return matchSport && matchAge;
+    });
+
+    if (duplicate) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'รายการแข่งขันนี้มีผลในระบบแล้ว!',
+        html: `
+          <div style="text-align: left; font-size: 14px; line-height: 1.6;">
+            <p style="margin-bottom: 8px;">พบข้อมูลผลการแข่งขันของรายการนี้ในระบบเรียบร้อยแล้ว:</p>
+            <div style="background-color: #fef3c7; border: 1px solid #fde68a; border-radius: 12px; padding: 12px; margin-bottom: 12px;">
+              <p style="margin: 0; font-weight: bold; color: #92400e;">🏆 ชนิดกีฬา: ${activeSportName}</p>
+              <p style="margin: 4px 0 0 0; font-weight: bold; color: #1e40af;">👥 รุ่นอายุ: ${liveAgeGroup}</p>
+              ${liveAthEvent ? `<p style="margin: 4px 0 0 0; font-weight: bold; color: #7c2d12;">🏃 รายการกรีฑา: ${liveAthEvent}</p>` : ''}
+            </div>
+            <p style="color: #dc2626; font-weight: bold; font-size: 13px; margin: 0;">
+              ⚠️ เพื่อป้องกันการลงผลการแข่งขันซ้ำซ้อน กรุณาเลือกรุ่นอายุหรือแก้ไขรายการเดิม
+            </p>
+          </div>
+        `,
+        confirmButtonText: 'รับทราบ',
+        confirmButtonColor: '#d97706',
+      });
+      return;
+    }
+
     const availablePool = [...liveRegisteredSchools, ...schools];
     const r1 = availablePool.find(s => s.id === liveRank1);
     const r2 = availablePool.find(s => s.id === liveRank2);
@@ -788,6 +880,100 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     } finally {
       setIsSavingLive(false);
     }
+  };
+
+  const getActiveLiveSport = () => {
+    const mySports = parseResponsibleSports(profile.responsibleSport);
+    return selectedLiveSport && mySports.includes(selectedLiveSport)
+      ? selectedLiveSport
+      : (mySports[0] || '');
+  };
+
+  const handleLiveAgeGroupChange = (newAge: string) => {
+    if (!newAge) {
+      setLiveAgeGroup('');
+      return;
+    }
+    const currentActiveSport = getActiveLiveSport();
+    const isAth = currentActiveSport.includes('กรีฑา');
+    const duplicate = resultsList.find(r => {
+      if (editingLiveResult?.id && r.id === editingLiveResult.id) return false;
+      const matchSport = r.sportName === currentActiveSport;
+      const matchAge = (r.ageGroup || '').trim().toLowerCase() === newAge.trim().toLowerCase();
+      if (isAth) {
+        if (!liveAthEvent) return false;
+        return matchSport && matchAge && (r.athleticsEvent || '').trim().toLowerCase() === liveAthEvent.trim().toLowerCase();
+      }
+      return matchSport && matchAge;
+    });
+
+    if (duplicate) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'รายการแข่งขันนี้มีผลในระบบแล้ว!',
+        html: `
+          <div style="text-align: left; font-size: 14px; line-height: 1.6;">
+            <p style="margin-bottom: 8px;">พบข้อมูลผลการแข่งขันของรายการนี้ในระบบเรียบร้อยแล้ว:</p>
+            <div style="background-color: #fef3c7; border: 1px solid #fde68a; border-radius: 12px; padding: 12px; margin-bottom: 12px;">
+              <p style="margin: 0; font-weight: bold; color: #92400e;">🏆 ชนิดกีฬา: ${currentActiveSport}</p>
+              <p style="margin: 4px 0 0 0; font-weight: bold; color: #1e40af;">👥 รุ่นอายุ: ${newAge}</p>
+              ${isAth && liveAthEvent ? `<p style="margin: 4px 0 0 0; font-weight: bold; color: #7c2d12;">🏃 รายการกรีฑา: ${liveAthEvent}</p>` : ''}
+            </div>
+            <p style="color: #dc2626; font-weight: bold; font-size: 13px; margin: 0;">
+              ⚠️ เพื่อป้องกันการลงผลการแข่งขันซ้ำซ้อน กรุณาเลือกรุ่นอายุอื่น หรือแก้ไขรายการเดิม
+            </p>
+          </div>
+        `,
+        confirmButtonText: 'รับทราบ',
+        confirmButtonColor: '#d97706',
+      });
+      setLiveAgeGroup('');
+      setLiveRegisteredSchools([]);
+      return;
+    }
+
+    setLiveAgeGroup(newAge);
+  };
+
+  const handleLiveAthEventChange = (newEv: string) => {
+    if (!newEv) {
+      setLiveAthEvent('');
+      return;
+    }
+    const currentActiveSport = getActiveLiveSport();
+    const duplicate = resultsList.find(r => {
+      if (editingLiveResult?.id && r.id === editingLiveResult.id) return false;
+      const matchSport = r.sportName === currentActiveSport;
+      const matchAge = (r.ageGroup || '').trim().toLowerCase() === (liveAgeGroup || '').trim().toLowerCase();
+      return matchSport && matchAge && (r.athleticsEvent || '').trim().toLowerCase() === newEv.trim().toLowerCase();
+    });
+
+    if (duplicate) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'รายการแข่งขันนี้มีผลในระบบแล้ว!',
+        html: `
+          <div style="text-align: left; font-size: 14px; line-height: 1.6;">
+            <p style="margin-bottom: 8px;">พบข้อมูลผลการแข่งขันของรายการนี้ในระบบเรียบร้อยแล้ว:</p>
+            <div style="background-color: #fef3c7; border: 1px solid #fde68a; border-radius: 12px; padding: 12px; margin-bottom: 12px;">
+              <p style="margin: 0; font-weight: bold; color: #92400e;">🏆 ชนิดกีฬา: ${currentActiveSport}</p>
+              <p style="margin: 4px 0 0 0; font-weight: bold; color: #1e40af;">👥 รุ่นอายุ: ${liveAgeGroup}</p>
+              <p style="margin: 4px 0 0 0; font-weight: bold; color: #7c2d12;">🏃 รายการกรีฑา: ${newEv}</p>
+            </div>
+            <p style="color: #dc2626; font-weight: bold; font-size: 13px; margin: 0;">
+              ⚠️ เพื่อป้องกันการลงผลการแข่งขันซ้ำซ้อน กรุณาเลือกรายการกรีฑาอื่น หรือแก้ไขรายการเดิม
+            </p>
+          </div>
+        `,
+        confirmButtonText: 'รับทราบ',
+        confirmButtonColor: '#d97706',
+      });
+      setLiveAthEvent('');
+      setLiveRegisteredSchools([]);
+      return;
+    }
+
+    setLiveAthEvent(newEv);
   };
 
   const handleToggleLivePublish = async (resItem: CompetitionResult) => {
@@ -1480,7 +1666,9 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
           />
         );
       case 'check-list':
-        const hasAnyAwards = athletesInSport.some(ath => getAwardStatusFromCert(ath, selectedSportForView?.name || '') !== null);
+        const coachesInSport = extractCoachesFromAthletes(athletesInSport);
+        const hasAnyAwards = athletesInSport.some(ath => getAwardStatusFromCert(ath, selectedSportForView?.name || '') !== null) ||
+          coachesInSport.some(c => getCoachAwardStatus(c, selectedSportForView?.name || '') !== null);
 
         return (
           <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
@@ -1500,9 +1688,9 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                       </div>
                       <div>
                         <h3 className="text-3xl font-black text-slate-900 leading-tight">
-                          รายชื่อนักกีฬา {selectedSportForView.name}
+                          รายชื่อนักกีฬาและผู้ฝึกสอน {selectedSportForView.name}
                         </h3>
-                        <p className="text-slate-400 text-sm font-bold mt-1">รายการทั้งหมดที่บันทึกไว้ในระบบ</p>
+                        <p className="text-slate-400 text-sm font-bold mt-1">รายการทั้งหมดที่บันทึกไว้ในระบบ พร้อมระบบเกียรติบัตร</p>
                       </div>
                     </div>
                   </div>
@@ -1510,15 +1698,15 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                     {hasAnyAwards && (
                       <button 
                         onClick={handlePrintAllCertificates}
-                        className="bg-emerald-600 text-white px-6 py-3 rounded-2xl font-black shadow-lg shadow-emerald-100 hover:bg-emerald-700 transition-all flex items-center gap-2 active:scale-95 text-sm animate-bounce"
+                        className="bg-emerald-600 text-white px-6 py-3 rounded-2xl font-black shadow-lg shadow-emerald-100 hover:bg-emerald-700 transition-all flex items-center gap-2 active:scale-95 text-sm animate-bounce cursor-pointer"
                       >
                         <PrinterCheck size={20} />
-                        พิมพ์เกียรติบัตรทั้งหมด
+                        พิมพ์เกียรติบัตรทั้งหมด (นร.+ครู)
                       </button>
                     )}
                     <div className="bg-blue-50 px-6 py-3 rounded-2xl border border-blue-100 flex items-center gap-3 text-blue-600 h-fit">
                       <UserCheck size={20} />
-                      <span className="font-black text-sm">รวม {athletesInSport.length} คน</span>
+                      <span className="font-black text-sm">นักกีฬา {athletesInSport.length} คน | ผู้ฝึกสอน {coachesInSport.length} คน</span>
                     </div>
                   </div>
                 </div>
@@ -1534,68 +1722,141 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                     <p className="text-slate-500 font-bold">ไม่พบรายชื่อนักกีฬาที่บันทึกไว้ในประเภทนี้</p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto rounded-[2rem] border border-slate-100 shadow-inner">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest">
-                        <tr>
-                          <th className="px-8 py-5">ลำดับ</th>
-                          <th className="px-8 py-5">รูปภาพ</th>
-                          <th className="px-8 py-5">ชื่อ-นามสกุล</th>
-                          <th className="px-8 py-5">รุ่นอายุ / รายการ</th>
-                          <th className="px-8 py-5 text-center">รางวัลที่ได้รับ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {athletesInSport.map((ath, idx) => {
-                          const awardStyle = getAwardStatusFromCert(ath, selectedSportForView.name);
-                          return (
-                            <tr key={idx} className="hover:bg-blue-50/20 transition-all group">
-                              <td className="px-8 py-6 font-black text-slate-300">{idx + 1}</td>
-                              <td className="px-8 py-6">
-                                <div className="w-16 h-20 rounded-xl bg-slate-50 border border-slate-200 overflow-hidden shadow-sm group-hover:scale-110 transition-transform">
-                                  {ath.avatar ? (
-                                    <img src={ath.avatar} className="w-full h-full object-cover" alt="avatar" />
+                  <div className="space-y-8">
+                    <div className="overflow-x-auto rounded-[2rem] border border-slate-100 shadow-inner">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest">
+                          <tr>
+                            <th className="px-8 py-5">ลำดับ</th>
+                            <th className="px-8 py-5">รูปภาพ</th>
+                            <th className="px-8 py-5">ชื่อ-นามสกุลนักกีฬา</th>
+                            <th className="px-8 py-5">รุ่นอายุ / รายการ</th>
+                            <th className="px-8 py-5 text-center">รางวัลที่ได้รับ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {athletesInSport.map((ath, idx) => {
+                            const awardStyle = getAwardStatusFromCert(ath, selectedSportForView.name);
+                            return (
+                              <tr key={idx} className="hover:bg-blue-50/20 transition-all group">
+                                <td className="px-8 py-6 font-black text-slate-300">{idx + 1}</td>
+                                <td className="px-8 py-6">
+                                  <div className="w-16 h-20 rounded-xl bg-slate-50 border border-slate-200 overflow-hidden shadow-sm group-hover:scale-110 transition-transform">
+                                    {ath.avatar ? (
+                                      <img src={ath.avatar} className="w-full h-full object-cover" alt="avatar" />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-slate-200">
+                                        <Camera size={20} />
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-8 py-6">
+                                  <div className="font-black text-slate-800 text-base">{ath.prefix}{ath.firstName} {ath.lastName}</div>
+                                </td>
+                                <td className="px-8 py-6">
+                                  <div className="space-y-1">
+                                    <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-[10px] font-black">
+                                      {ath.ageGroup}
+                                    </span>
+                                    {ath.athleticsEvent && (
+                                      <div className="text-[10px] text-slate-400 font-bold mt-1 px-1 uppercase tracking-wider truncate max-w-[150px]">
+                                        {ath.athleticsEvent}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-8 py-6 text-center">
+                                  {awardStyle ? (
+                                    <button 
+                                      onClick={() => handlePrintSingleCertificate(awardStyle.certData)}
+                                      title="คลิกเพื่อพิมพ์เกียรติบัตรนักกีฬา"
+                                      className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl border font-black text-xs shadow-sm animate-in fade-in zoom-in-95 transition-all active:scale-95 hover:shadow-md hover:brightness-105 cursor-pointer ${awardStyle.color}`}
+                                    >
+                                      <Printer size={16} className={awardStyle.iconColor} />
+                                      {awardStyle.text}
+                                    </button>
                                   ) : (
-                                    <div className="w-full h-full flex items-center justify-center text-slate-200">
-                                      <Camera size={20} />
-                                    </div>
+                                    <span className="text-slate-300 font-bold text-xs italic tracking-wide">รอสรุปผล</span>
                                   )}
-                                </div>
-                              </td>
-                              <td className="px-8 py-6">
-                                <div className="font-black text-slate-800 text-base">{ath.prefix}{ath.firstName} {ath.lastName}</div>
-                              </td>
-                              <td className="px-8 py-6">
-                                <div className="space-y-1">
-                                  <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-[10px] font-black">
-                                    {ath.ageGroup}
-                                  </span>
-                                  {ath.athleticsEvent && (
-                                    <div className="text-[10px] text-slate-400 font-bold mt-1 px-1 uppercase tracking-wider truncate max-w-[150px]">
-                                      {ath.athleticsEvent}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="px-8 py-6 text-center">
-                                {awardStyle ? (
-                                  <button 
-                                    onClick={() => handlePrintSingleCertificate(awardStyle.certData)}
-                                    title="คลิกเพื่อพิมพ์เกียรติบัตร"
-                                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl border font-black text-xs shadow-sm animate-in fade-in zoom-in-95 transition-all active:scale-95 hover:shadow-md hover:brightness-105 ${awardStyle.color}`}
-                                  >
-                                    <Printer size={16} className={awardStyle.iconColor} />
-                                    {awardStyle.text}
-                                  </button>
-                                ) : (
-                                  <span className="text-slate-300 font-bold text-xs italic tracking-wide">รอสรุปผล</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* ตารางรายชื่อครูผู้ฝึกสอน */}
+                    {coachesInSport.length > 0 && (
+                      <div className="pt-4">
+                        <div className="flex items-center gap-3 mb-4 px-2">
+                          <div className="p-2.5 bg-amber-100 text-amber-800 rounded-2xl">
+                            <Briefcase size={20} />
+                          </div>
+                          <div>
+                            <h4 className="font-black text-slate-800 text-xl">
+                              รายชื่อครูผู้ฝึกสอน ({coachesInSport.length} คน)
+                            </h4>
+                            <p className="text-slate-400 text-xs font-bold mt-0.5">
+                              นำรายชื่อจากคอลัมน์ผู้ฝึกสอน เพื่อออกเกียรติบัตรครูผู้ฝึกสอนอัตโนมัติ
+                            </p>
+                          </div>
+                        </div>
+                        <div className="overflow-x-auto rounded-[2rem] border border-amber-200/80 bg-amber-50/20 shadow-inner">
+                          <table className="w-full text-left">
+                            <thead className="bg-amber-900 text-white text-[10px] font-black uppercase tracking-widest">
+                              <tr>
+                                <th className="px-8 py-5 w-20">ลำดับ</th>
+                                <th className="px-8 py-5">ชื่อ-นามสกุลครูผู้ฝึกสอน</th>
+                                <th className="px-8 py-5">เบอร์โทรศัพท์</th>
+                                <th className="px-8 py-5 text-center">รางวัลที่ได้รับ (เกียรติบัตร)</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-amber-100/60 bg-white">
+                              {coachesInSport.map((coach, cIdx) => {
+                                const coachAwards = getCoachAwards(coach, selectedSportForView.name);
+                                return (
+                                  <tr key={cIdx} className="hover:bg-amber-50/40 transition-all">
+                                    <td className="px-8 py-6 font-black text-slate-400">{cIdx + 1}</td>
+                                    <td className="px-8 py-6">
+                                      <div className="font-black text-slate-900 text-base flex items-center gap-2">
+                                        <span className="p-1 bg-amber-100 text-amber-800 rounded-lg text-xs">🎓 ครูผู้ฝึกสอน</span>
+                                        {coach.fullName}
+                                      </div>
+                                    </td>
+                                    <td className="px-8 py-6">
+                                      <div className="text-sm font-bold text-slate-600">
+                                        {coach.phone || '-'}
+                                      </div>
+                                    </td>
+                                    <td className="px-8 py-6 text-center">
+                                      {coachAwards.length > 0 ? (
+                                        <div className="flex flex-wrap items-center justify-center gap-2">
+                                          {coachAwards.map((coachAward, aIdx) => (
+                                            <button 
+                                              key={aIdx}
+                                              onClick={() => handlePrintSingleCertificate(coachAward.certData)}
+                                              title="คลิกเพื่อพิมพ์เกียรติบัตรครูผู้ฝึกสอน"
+                                              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl border font-black text-xs shadow-sm animate-in fade-in zoom-in-95 transition-all active:scale-95 hover:shadow-md hover:brightness-105 cursor-pointer ${coachAward.color}`}
+                                            >
+                                              <Printer size={16} className={coachAward.iconColor} />
+                                              {coachAward.text}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-300 font-bold text-xs italic tracking-wide">รอสรุปผล</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2016,15 +2277,22 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                         <select
                           required
                           value={liveAgeGroup}
-                          onChange={(e) => setLiveAgeGroup(e.target.value)}
-                          className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm"
+                          onChange={(e) => handleLiveAgeGroupChange(e.target.value)}
+                          className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
                         >
                           <option value="">-- เลือกรุ่นอายุ --</option>
-                          {ageGroups.map(ag => (
-                            <option key={ag.id} value={`${ag.age} (${ag.gender})`}>
-                              {ag.age} ({ag.gender})
-                            </option>
-                          ))}
+                          {ageGroups.map(ag => {
+                            const val = `${ag.age} (${ag.gender})`;
+                            const isRecorded = !isSportAthletics && resultsList.some(r => {
+                              if (editingLiveResult?.id && r.id === editingLiveResult.id) return false;
+                              return r.sportName === currentActiveSport && (r.ageGroup || '').trim().toLowerCase() === val.trim().toLowerCase();
+                            });
+                            return (
+                              <option key={ag.id} value={val}>
+                                {val} {isRecorded ? '⚠️ (มีผลแข่งขันแล้ว)' : ''}
+                              </option>
+                            );
+                          })}
                         </select>
                       </div>
 
@@ -2036,15 +2304,24 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                           <select
                             required
                             value={liveAthEvent}
-                            onChange={(e) => setLiveAthEvent(e.target.value)}
-                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm"
+                            onChange={(e) => handleLiveAthEventChange(e.target.value)}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 text-sm cursor-pointer"
                           >
                             <option value="">-- เลือกรายการกรีฑา --</option>
-                            {athleticsList.map(ev => (
-                              <option key={ev.id} value={`${ev.eventNo} ${ev.name}`}>
-                                {ev.eventNo}. {ev.name}
-                              </option>
-                            ))}
+                            {athleticsList.map(ev => {
+                              const val = `${ev.eventNo} ${ev.name}`;
+                              const isRecorded = liveAgeGroup && resultsList.some(r => {
+                                if (editingLiveResult?.id && r.id === editingLiveResult.id) return false;
+                                return r.sportName === currentActiveSport && 
+                                  (r.ageGroup || '').trim().toLowerCase() === (liveAgeGroup || '').trim().toLowerCase() &&
+                                  (r.athleticsEvent || '').trim().toLowerCase() === val.trim().toLowerCase();
+                              });
+                              return (
+                                <option key={ev.id} value={val}>
+                                  {ev.eventNo}. {ev.name} {isRecorded ? '⚠️ (มีผลแข่งขันแล้ว)' : ''}
+                                </option>
+                              );
+                            })}
                           </select>
                         </div>
                       )}

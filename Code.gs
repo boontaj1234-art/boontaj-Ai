@@ -143,6 +143,10 @@ function doGet(e) {
         rank3SchoolName: String(r[10] || '').trim(),
         rank3SchoolId2: String(r[16] || '').trim(),
         rank3SchoolName2: String(r[17] || '').trim(),
+        rank1AthleteName: r[18] ? String(r[18]).trim() : '',
+        rank2AthleteName: r[19] ? String(r[19]).trim() : '',
+        rank3AthleteName: r[20] ? String(r[20]).trim() : '',
+        rank3AthleteName2: r[21] ? String(r[21]).trim() : '',
         certStartNo: r[13] || '', 
         certEndNo: r[14] || '',   
         certTemplate: r[15] || '', 
@@ -179,17 +183,19 @@ function doGet(e) {
       if (!sheet) return createJsonResponse([]);
       
       const data = sheet.getDataRange().getValues();
-      const athletes = data.filter(r => {
+      const athletes = data.slice(1).filter(r => {
         const rowSchoolId = String(r[0]).trim();
         const rowAgeGroup = String(r[7] || '').trim();
         const rowEvent = String(r[22] || '').trim();
         
-        const matchSchool = rowSchoolId === schoolId;
-        const matchAge = ageGroup ? rowAgeGroup === ageGroup : true;
-        const matchEvent = athleticsEvent ? rowEvent === athleticsEvent : true;
+        const matchSchool = schoolId ? (rowSchoolId === schoolId) : true;
+        const matchAge = ageGroup ? (rowAgeGroup.toLowerCase() === ageGroup.toLowerCase()) : true;
+        const matchEvent = athleticsEvent ? (rowEvent.toLowerCase() === athleticsEvent.toLowerCase()) : true;
         
         return matchSchool && matchAge && matchEvent;
       }).map(r => ({
+        schoolId: String(r[0]).trim(),
+        schoolName: String(r[1] || '').trim(),
         prefix: r[4],
         firstName: r[5],
         lastName: r[6],
@@ -486,7 +492,8 @@ function doPost(e) {
         String(d.rank3SchoolId).trim(), d.rank3SchoolName,
         new Date(), d.isPublished ? true : false,
         d.certStartNo || '', d.certEndNo || '', d.certTemplate || '',
-        String(d.rank3SchoolId2 || '').trim(), d.rank3SchoolName2 || ''
+        String(d.rank3SchoolId2 || '').trim(), d.rank3SchoolName2 || '',
+        d.rank1AthleteName || '', d.rank2AthleteName || '', d.rank3AthleteName || '', d.rank3AthleteName2 || ''
       ];
       updateOrInsertRow(getOrCreateSheet(ss, 'results'), id, rowValues);
       return createJsonResponse({ status: 'success' });

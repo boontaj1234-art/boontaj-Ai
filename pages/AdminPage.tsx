@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SCRIPT_URL } from '../constants';
-import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete, FeedbackRecord, parseResponsibleSports, formatResponsibleSports } from '../types';
+import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete, Coach, extractCoachesFromAthletes, FeedbackRecord, parseResponsibleSports, formatResponsibleSports } from '../types';
 import { 
   Users, 
   Trophy, 
@@ -28,6 +28,7 @@ import {
   ScrollText,
   Printer,
   UserCheck,
+  User,
   Eye,
   EyeOff,
   CloudUpload,
@@ -117,6 +118,197 @@ const AdminPage: React.FC = () => {
   const [resAthEvent, setResAthEvent] = useState('');
   const [resRegisteredSchools, setResRegisteredSchools] = useState<{id: string, name: string}[]>([]);
   const [isResLoadingSchools, setIsResLoadingSchools] = useState(false);
+  const [schoolAthletesMap, setSchoolAthletesMap] = useState<Record<string, Athlete[]>>({});
+  const [loadingAthletesForSchool, setLoadingAthletesForSchool] = useState<Record<string, boolean>>({});
+
+  // ฟังก์ชันดึงรายชื่อนักกีฬาของโรงเรียนในรายการแข่งขันนี้
+  const fetchAthletesForSchool = async (
+    schoolId: string,
+    sportIdOverride?: string,
+    ageGroupOverride?: string,
+    athEventOverride?: string
+  ) => {
+    if (!schoolId) return;
+    const targetSportId = sportIdOverride || resSportId;
+    const targetAgeGroup = ageGroupOverride !== undefined ? ageGroupOverride : resAgeGroup;
+    const targetAthEvent = athEventOverride !== undefined ? athEventOverride : resAthEvent;
+    if (!targetSportId || !targetAgeGroup) return;
+
+    setLoadingAthletesForSchool(prev => ({ ...prev, [schoolId]: true }));
+    try {
+      let url = `${SCRIPT_URL}?action=getAthletes&schoolId=${schoolId}&sportId=${targetSportId}&ageGroup=${encodeURIComponent(targetAgeGroup)}`;
+      if (targetAthEvent) url += `&athleticsEvent=${encodeURIComponent(targetAthEvent)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setSchoolAthletesMap(prev => ({ ...prev, [schoolId]: data }));
+      }
+    } catch (e) {
+      console.error('Error fetching athletes for school:', e);
+    } finally {
+      setLoadingAthletesForSchool(prev => ({ ...prev, [schoolId]: false }));
+    }
+  };
+
+  // ฟังก์ชันตรวจสอบผลการแข่งขันซ้ำซ้อน
+  const checkDuplicateResult = (sportId: string, ageGroup: string, athEvent: string = '', excludeId?: string): CompetitionResult | null => {
+    if (!sportId || !ageGroup) return null;
+    const sport = sportTypes.find(s => s.id === sportId);
+    const isAth = sport?.name.includes('กรีฑา');
+
+    // สำหรับกรีฑา ต้องเลือกรายการกรีฑาด้วยจึงจะตรวจสอบได้ครบถ้วน
+    if (isAth && !athEvent) {
+      return null;
+    }
+
+    const normAge = ageGroup.trim().toLowerCase();
+    const normAth = athEvent.trim().toLowerCase();
+
+    const found = resultsList.find(r => {
+      if (excludeId && String(r.id).trim() === String(excludeId).trim()) return false;
+
+      const matchSport = r.sportId === sportId || (sport && r.sportName && r.sportName.trim() === sport.name.trim());
+      const matchAge = (r.ageGroup || '').trim().toLowerCase() === normAge;
+
+      if (isAth) {
+        const matchAth = (r.athleticsEvent || '').trim().toLowerCase() === normAth;
+        return matchSport && matchAge && matchAth;
+      }
+      return matchSport && matchAge;
+    });
+
+    return found || null;
+  };
+
+  // ฟังก์ชันเปิด Modal เพื่อแก้ไขผลการแข่งขัน โหลดข้อมูลเดิมพร้อมดึงรายชื่อนักกีฬาสำหรับเลือกรับรางวัล
+  const handleOpenEditResult = (r: CompetitionResult) => {
+    const matchedSport = sportTypes.find(s => s.id === r.sportId || s.name === r.sportName);
+    const validSportId = matchedSport ? matchedSport.id : r.sportId;
+    const sAge = r.ageGroup || '';
+    const sAth = r.athleticsEvent || '';
+
+    setSchoolAthletesMap({});
+    setEditingResult({ ...r, sportId: validSportId });
+    setIsAddingNew(false);
+    setResSportId(validSportId);
+    setResAgeGroup(sAge);
+    setResAthEvent(sAth);
+
+    // ดึงรายชื่อนักกีฬาของโรงเรียนที่ได้รับเหรียญรางวัลทันที เพื่อให้แสดงใน dropdown
+    const ids = [r.rank1SchoolId, r.rank2SchoolId, r.rank3SchoolId, r.rank3SchoolId2].filter(Boolean) as string[];
+    ids.forEach(id => {
+      fetchAthletesForSchool(id, validSportId, sAge, sAth);
+    });
+  };
+
+  // แจ้งเตือนเมื่อเลือกรายการแข่งขันที่มีผลแล้ว พร้อมปุ่มให้โหลดขึ้นมาแก้ไขได้ทันที
+  const promptEditExistingResult = (dup: CompetitionResult) => {
+    Swal.fire({
+      icon: 'info',
+      title: 'พบข้อมูลผลการแข่งขันในระบบแล้ว',
+      html: `
+        <div style="text-align: left; font-size: 13px; line-height: 1.6;">
+          <p style="margin-bottom: 8px; color: #334155;">
+            รายการแข่งขันนี้มีผลบันทึกอยู่ในระบบเรียบร้อยแล้ว:
+          </p>
+          <div style="background-color: #fef3c7; border: 1px solid #fde68a; border-radius: 12px; padding: 12px; margin-bottom: 12px;">
+            <p style="margin: 0; font-weight: bold; color: #92400e;">🏆 ชนะเลิศ: ${dup.rank1SchoolName} ${dup.rank1AthleteName ? `(${dup.rank1AthleteName})` : ''}</p>
+            <p style="margin: 4px 0 0 0; color: #475569;">🥈 อันดับ 2: ${dup.rank2SchoolName || '-'} ${dup.rank2AthleteName ? `(${dup.rank2AthleteName})` : ''}</p>
+            <p style="margin: 4px 0 0 0; color: #475569;">🥉 อันดับ 3: ${dup.rank3SchoolName || '-'} ${dup.rank3AthleteName ? `(${dup.rank3AthleteName})` : ''}</p>
+          </div>
+          <p style="color: #047857; font-weight: bold; margin: 0;">
+            ต้องการโหลดข้อมูลขึ้นมาเพื่อแก้ไขผลการแข่งขันหรือไม่?
+          </p>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: '✏️ โหลดเพื่อแก้ไขผล',
+      confirmButtonColor: '#059669',
+      cancelButtonText: 'เลือกรุ่นอื่น',
+      cancelButtonColor: '#64748b',
+    }).then((result: any) => {
+      if (result.isConfirmed) {
+        handleOpenEditResult(dup);
+      } else {
+        const sport = sportTypes.find(s => s.id === resSportId);
+        if (sport?.name.includes('กรีฑา')) {
+          setResAthEvent('');
+        } else {
+          setResAgeGroup('');
+        }
+      }
+    });
+  };
+
+  const handleSportChange = (newSportId: string) => {
+    setResSportId(newSportId);
+    setSchoolAthletesMap({});
+    const sport = sportTypes.find(s => s.id === newSportId);
+    const isAth = sport?.name.includes('กรีฑา');
+    if (!isAth) {
+      setResAthEvent('');
+    }
+
+    if (newSportId && resAgeGroup) {
+      const duplicate = checkDuplicateResult(
+        newSportId,
+        resAgeGroup,
+        isAth ? resAthEvent : '',
+        isAddingNew ? undefined : editingResult?.id
+      );
+
+      if (duplicate && (!editingResult || duplicate.id !== editingResult.id)) {
+        promptEditExistingResult(duplicate);
+      }
+    }
+  };
+
+  const handleAgeGroupChange = (newAgeGroup: string) => {
+    if (!newAgeGroup) {
+      setResAgeGroup('');
+      return;
+    }
+    setResAgeGroup(newAgeGroup);
+    setSchoolAthletesMap({});
+
+    const sport = sportTypes.find(s => s.id === resSportId);
+    const isAth = sport?.name.includes('กรีฑา');
+
+    if (resSportId && newAgeGroup) {
+      const duplicate = checkDuplicateResult(
+        resSportId,
+        newAgeGroup,
+        isAth ? resAthEvent : '',
+        isAddingNew ? undefined : editingResult?.id
+      );
+
+      if (duplicate && (!editingResult || duplicate.id !== editingResult.id)) {
+        promptEditExistingResult(duplicate);
+      }
+    }
+  };
+
+  const handleAthEventChange = (newAthEvent: string) => {
+    if (!newAthEvent) {
+      setResAthEvent('');
+      return;
+    }
+    setResAthEvent(newAthEvent);
+    setSchoolAthletesMap({});
+
+    if (resSportId && resAgeGroup && newAthEvent) {
+      const duplicate = checkDuplicateResult(
+        resSportId,
+        resAgeGroup,
+        newAthEvent,
+        isAddingNew ? undefined : editingResult?.id
+      );
+
+      if (duplicate && (!editingResult || duplicate.id !== editingResult.id)) {
+        promptEditExistingResult(duplicate);
+      }
+    }
+  };
 
   const fetchData = async () => {
     if (!isRefreshing) setIsLoading(true);
@@ -209,6 +401,31 @@ const AdminPage: React.FC = () => {
       fetchSchoolsForResults();
     }
   }, [resSportId, resAgeGroup, resAthEvent, activeTab, sportTypes, Boolean(editingResult)]);
+
+  useEffect(() => {
+    if (!editingResult || activeTab !== 'results') return;
+    const ids = [
+      editingResult.rank1SchoolId, 
+      editingResult.rank2SchoolId, 
+      editingResult.rank3SchoolId, 
+      editingResult.rank3SchoolId2
+    ].filter(Boolean) as string[];
+
+    ids.forEach(id => {
+      if (!schoolAthletesMap[id]) {
+        fetchAthletesForSchool(id, resSportId, resAgeGroup, resAthEvent);
+      }
+    });
+  }, [
+    editingResult?.rank1SchoolId, 
+    editingResult?.rank2SchoolId, 
+    editingResult?.rank3SchoolId, 
+    editingResult?.rank3SchoolId2, 
+    resSportId, 
+    resAgeGroup, 
+    resAthEvent,
+    activeTab
+  ]);
 
   const handleRefresh = () => {
     setIsRefreshing(true);
@@ -343,6 +560,7 @@ const AdminPage: React.FC = () => {
     setIsSavingCert(result.id);
     Swal.fire({ 
       title: 'กำลังตรวจสอบรายชื่อและคำนวณเลขที่...', 
+      html: '<p class="text-xs text-slate-500 mt-1">กำลังประมวลผลรายชื่อนักกีฬาและครูผู้ฝึกสอน...</p>',
       allowOutsideClick: false, 
       didOpen: () => Swal.showLoading() 
     });
@@ -364,59 +582,207 @@ const AdminPage: React.FC = () => {
         getAthletesList(result.rank3SchoolId2 || '')
       ]);
 
+      const coachesR1 = extractCoachesFromAthletes(athletesR1);
+      const coachesR2 = extractCoachesFromAthletes(athletesR2);
+      const coachesR3 = extractCoachesFromAthletes(athletesR3);
+      const coachesR3_2 = extractCoachesFromAthletes(athletesR3_2);
+
+      // ตรวจสอบโรงเรียนที่ได้รับรางวัลหลายอันดับ (เช่น กรีฑา รุ่นอายุไม่เกิน 15 ปี)
+      const rankSchoolIds = [
+        result.rank1SchoolId, 
+        result.rank2SchoolId, 
+        result.rank3SchoolId, 
+        result.rank3SchoolId2 || ''
+      ].filter(Boolean);
+
+      const schoolRankCount: Record<string, number> = {};
+      rankSchoolIds.forEach(id => {
+        schoolRankCount[id] = (schoolRankCount[id] || 0) + 1;
+      });
+
+      const schoolAssignedIdx: Record<string, number> = {};
+      const isRelay = (result.athleticsEvent || '').includes('ผลัด');
+
+      const getAthletesForRank = (schoolId: string, allAthletes: Athlete[]): Athlete[] => {
+        if (!schoolId || !allAthletes || allAthletes.length === 0) return [];
+        const appearsMultipleTimes = (schoolRankCount[schoolId] || 0) > 1;
+        if (!isRelay && appearsMultipleTimes && allAthletes.length > 1) {
+          const currentIdx = schoolAssignedIdx[schoolId] || 0;
+          schoolAssignedIdx[schoolId] = currentIdx + 1;
+          const assignedAth = allAthletes[currentIdx] || allAthletes[allAthletes.length - 1];
+          return [assignedAth];
+        }
+        return allAthletes;
+      };
+
+      const finalAthletesR1 = getAthletesForRank(result.rank1SchoolId, athletesR1);
+      const finalAthletesR2 = getAthletesForRank(result.rank2SchoolId, athletesR2);
+      const finalAthletesR3 = getAthletesForRank(result.rank3SchoolId, athletesR3);
+      const finalAthletesR3_2 = getAthletesForRank(result.rank3SchoolId2 || '', athletesR3_2);
+
       const individualRecords: any[] = [];
       let globalCounter = 0;
 
-      athletesR1.forEach((ath) => {
+      // อันดับ 1: ชนะเลิศ (นักกีฬา + ครูผู้ฝึกสอน)
+      if (result.rank1AthleteName) {
         individualRecords.push({
           certNo: formatCertNo(result.certStartNo || '', globalCounter++),
-          fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`,
+          fullName: result.rank1AthleteName,
           schoolName: result.rank1SchoolName,
           rank: 'ชนะเลิศ',
           sportName: result.sportName,
           ageGroup: result.ageGroup,
-          athleticsEvent: result.athleticsEvent || '-'
+          athleticsEvent: result.athleticsEvent || '-',
+          isCoach: false
+        });
+      } else {
+        finalAthletesR1.forEach((ath) => {
+          individualRecords.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+            schoolName: result.rank1SchoolName,
+            rank: 'ชนะเลิศ',
+            sportName: result.sportName,
+            ageGroup: result.ageGroup,
+            athleticsEvent: result.athleticsEvent || '-',
+            isCoach: false
+          });
+        });
+      }
+      coachesR1.forEach((coach) => {
+        individualRecords.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          fullName: coach.fullName,
+          schoolName: result.rank1SchoolName,
+          rank: 'ครูผู้ฝึกสอน ได้รับรางวัลชนะเลิศ',
+          sportName: result.sportName,
+          ageGroup: result.ageGroup,
+          athleticsEvent: result.athleticsEvent || '-',
+          isCoach: true
         });
       });
 
-      athletesR2.forEach((ath) => {
+      // อันดับ 2: รองชนะเลิศอันดับ 1 (นักกีฬา + ครูผู้ฝึกสอน)
+      if (result.rank2AthleteName) {
         individualRecords.push({
           certNo: formatCertNo(result.certStartNo || '', globalCounter++),
-          fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`,
+          fullName: result.rank2AthleteName,
           schoolName: result.rank2SchoolName,
           rank: 'รองชนะเลิศอันดับ 1',
           sportName: result.sportName,
           ageGroup: result.ageGroup,
-          athleticsEvent: result.athleticsEvent || '-'
+          athleticsEvent: result.athleticsEvent || '-',
+          isCoach: false
+        });
+      } else {
+        finalAthletesR2.forEach((ath) => {
+          individualRecords.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+            schoolName: result.rank2SchoolName,
+            rank: 'รองชนะเลิศอันดับ 1',
+            sportName: result.sportName,
+            ageGroup: result.ageGroup,
+            athleticsEvent: result.athleticsEvent || '-',
+            isCoach: false
+          });
+        });
+      }
+      coachesR2.forEach((coach) => {
+        individualRecords.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          fullName: coach.fullName,
+          schoolName: result.rank2SchoolName,
+          rank: 'ครูผู้ฝึกสอน ได้รับรางวัลรองชนะเลิศอันดับ 1',
+          sportName: result.sportName,
+          ageGroup: result.ageGroup,
+          athleticsEvent: result.athleticsEvent || '-',
+          isCoach: true
         });
       });
 
-      athletesR3.forEach((ath) => {
+      // อันดับ 3: รองชนะเลิศอันดับ 2 (นักกีฬา + ครูผู้ฝึกสอน)
+      if (result.rank3AthleteName) {
         individualRecords.push({
           certNo: formatCertNo(result.certStartNo || '', globalCounter++),
-          fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`,
+          fullName: result.rank3AthleteName,
           schoolName: result.rank3SchoolName,
           rank: 'รองชนะเลิศอันดับ 2',
           sportName: result.sportName,
           ageGroup: result.ageGroup,
-          athleticsEvent: result.athleticsEvent || '-'
+          athleticsEvent: result.athleticsEvent || '-',
+          isCoach: false
+        });
+      } else {
+        finalAthletesR3.forEach((ath) => {
+          individualRecords.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+            schoolName: result.rank3SchoolName,
+            rank: 'รองชนะเลิศอันดับ 2',
+            sportName: result.sportName,
+            ageGroup: result.ageGroup,
+            athleticsEvent: result.athleticsEvent || '-',
+            isCoach: false
+          });
+        });
+      }
+      coachesR3.forEach((coach) => {
+        individualRecords.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          fullName: coach.fullName,
+          schoolName: result.rank3SchoolName,
+          rank: 'ครูผู้ฝึกสอน ได้รับรางวัลรองชนะเลิศอันดับ 2',
+          sportName: result.sportName,
+          ageGroup: result.ageGroup,
+          athleticsEvent: result.athleticsEvent || '-',
+          isCoach: true
         });
       });
 
+      // อันดับ 3 ร่วม: รองชนะเลิศอันดับ 2 (ร่วม) (นักกีฬา + ครูผู้ฝึกสอน)
       if (result.rank3SchoolId2 && result.rank3SchoolName2) {
-        athletesR3_2.forEach((ath) => {
+        if (result.rank3AthleteName2) {
           individualRecords.push({
             certNo: formatCertNo(result.certStartNo || '', globalCounter++),
-            fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`,
-            schoolName: result.rank3SchoolName2,
+            fullName: result.rank3AthleteName2,
+            schoolName: result.rank3SchoolName2!,
             rank: 'รองชนะเลิศอันดับ 2 (ร่วม)',
             sportName: result.sportName,
             ageGroup: result.ageGroup,
-            athleticsEvent: result.athleticsEvent || '-'
+            athleticsEvent: result.athleticsEvent || '-',
+            isCoach: false
+          });
+        } else {
+          finalAthletesR3_2.forEach((ath) => {
+            individualRecords.push({
+              certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+              fullName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+              schoolName: result.rank3SchoolName2!,
+              rank: 'รองชนะเลิศอันดับ 2 (ร่วม)',
+              sportName: result.sportName,
+              ageGroup: result.ageGroup,
+              athleticsEvent: result.athleticsEvent || '-',
+              isCoach: false
+            });
+          });
+        }
+        coachesR3_2.forEach((coach) => {
+          individualRecords.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            fullName: coach.fullName,
+            schoolName: result.rank3SchoolName2!,
+            rank: 'ครูผู้ฝึกสอน ได้รับรางวัลรองชนะเลิศอันดับ 2 (ร่วม)',
+            sportName: result.sportName,
+            ageGroup: result.ageGroup,
+            athleticsEvent: result.athleticsEvent || '-',
+            isCoach: true
           });
         });
       }
 
+      const totalAthletes = athletesR1.length + athletesR2.length + athletesR3.length + athletesR3_2.length;
+      const totalCoaches = coachesR1.length + coachesR2.length + coachesR3.length + coachesR3_2.length;
       const lastIdx = individualRecords.length > 0 ? individualRecords.length - 1 : 0;
       const certEndNo = formatCertNo(result.certStartNo || '', lastIdx);
 
@@ -436,7 +802,25 @@ const AdminPage: React.FC = () => {
       const resData = await response.json();
       if (resData.status === 'success') {
         setResultsList(prev => prev.map(r => r.id === result.id ? { ...r, certEndNo: certEndNo } : r));
-        Swal.fire({ icon: 'success', title: 'บันทึกสำเร็จ', text: `บันทึกข้อมูลและเลขที่เกียรติบัตรลำดับสุดท้ายคือ ${certEndNo}`, timer: 3000, showConfirmButton: true });
+        Swal.fire({ 
+          icon: 'success', 
+          title: 'บันทึกสำเร็จ', 
+          html: `
+            <div class="text-left text-xs space-y-2 p-2 bg-slate-50 rounded-xl border border-slate-200">
+              <p><b>เลขที่เริ่มต้น:</b> <span class="text-rose-600 font-bold">${result.certStartNo}</span></p>
+              <p><b>เลขที่สิ้นสุด:</b> <span class="text-rose-600 font-bold">${certEndNo}</span></p>
+              <div class="pt-1.5 border-t border-slate-200 flex justify-between text-slate-600 font-semibold">
+                <span>นักกีฬา: <b class="text-slate-800">${totalAthletes}</b> คน</span>
+                <span>ครูผู้ฝึกสอน: <b class="text-slate-800">${totalCoaches}</b> คน</span>
+              </div>
+              <p class="text-emerald-600 font-black text-xs pt-1">
+                ✓ รวมออกเกียรติบัตรทั้งหมด ${individualRecords.length} ฉบับ (รวมครูผู้ฝึกสอนจากคอลัมน์ผู้ฝึกสอนเรียบร้อยแล้ว)
+              </p>
+            </div>
+          `,
+          timer: 4000, 
+          showConfirmButton: true 
+        });
       } else {
         throw new Error(resData.message);
       }
@@ -554,10 +938,30 @@ const AdminPage: React.FC = () => {
     e.preventDefault();
     if (!editingResult) return;
     const sport = sportTypes.find(s => s.id === resSportId);
+    const isAth = sport?.name.includes('กรีฑา');
+
+    // ตรวจสอบความซ้ำซ้อนก่อนบันทึก (เฉพาะเมื่อเพิ่มใหม่ หรือเปลี่ยนรายการไปตรงกับรายการอื่น)
+    const duplicate = checkDuplicateResult(
+      resSportId,
+      resAgeGroup,
+      isAth ? resAthEvent : '',
+      isAddingNew ? undefined : editingResult.id
+    );
+
+    if (duplicate && (!editingResult.id || duplicate.id !== editingResult.id)) {
+      promptEditExistingResult(duplicate);
+      return;
+    }
+
     const r1Id = editingResult.rank1SchoolId || '';
     const r2Id = editingResult.rank2SchoolId || '';
     const r3Id = editingResult.rank3SchoolId || '';
     const r3_2Id = editingResult.rank3SchoolId2 || '';
+
+    const r1School = resRegisteredSchools.find(s => s.id === r1Id) || schools.find(s => s.id === r1Id);
+    const r2School = resRegisteredSchools.find(s => s.id === r2Id) || schools.find(s => s.id === r2Id);
+    const r3School = resRegisteredSchools.find(s => s.id === r3Id) || schools.find(s => s.id === r3Id);
+    const r3_2School = resRegisteredSchools.find(s => s.id === r3_2Id) || schools.find(s => s.id === r3_2Id);
 
     const payload = {
       ...editingResult,
@@ -566,21 +970,38 @@ const AdminPage: React.FC = () => {
       ageGroup: resAgeGroup,
       athleticsEvent: resAthEvent,
       rank1SchoolId: r1Id,
-      rank1SchoolName: r1Id ? (resRegisteredSchools.find(s => s.id === r1Id)?.name || editingResult.rank1SchoolName || '') : '',
+      rank1SchoolName: r1Id ? (r1School?.name || editingResult.rank1SchoolName || '') : '',
+      rank1AthleteName: editingResult.rank1AthleteName || '',
       rank2SchoolId: r2Id,
-      rank2SchoolName: r2Id ? (resRegisteredSchools.find(s => s.id === r2Id)?.name || editingResult.rank2SchoolName || '') : '',
+      rank2SchoolName: r2Id ? (r2School?.name || editingResult.rank2SchoolName || '') : '',
+      rank2AthleteName: editingResult.rank2AthleteName || '',
       rank3SchoolId: r3Id,
-      rank3SchoolName: r3Id ? (resRegisteredSchools.find(s => s.id === r3Id)?.name || editingResult.rank3SchoolName || '') : '',
+      rank3SchoolName: r3Id ? (r3School?.name || editingResult.rank3SchoolName || '') : '',
+      rank3AthleteName: editingResult.rank3AthleteName || '',
       rank3SchoolId2: r3_2Id,
-      rank3SchoolName2: r3_2Id ? (resRegisteredSchools.find(s => s.id === r3_2Id)?.name || editingResult.rank3SchoolName2 || '') : '',
+      rank3SchoolName2: r3_2Id ? (r3_2School?.name || editingResult.rank3SchoolName2 || '') : '',
+      rank3AthleteName2: editingResult.rank3AthleteName2 || '',
     };
-    Swal.fire({ title: 'กำลังบันทึก...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    Swal.fire({ title: 'กำลังบันทึกข้อมูล...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    
+    // อัปเดต state ทันทีเพื่อความลื่นไหลและตอบสนองฉับไว
+    setResultsList(prev => {
+      const idx = prev.findIndex(item => item.id === payload.id);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = payload as CompetitionResult;
+        return copy;
+      }
+      return [payload as CompetitionResult, ...prev];
+    });
+
     if (await handlePostRequest({ action: 'updateResult', data: payload })) {
       setEditingResult(null);
       setResSportId('');
       setResAgeGroup('');
       setResAthEvent('');
       setResRegisteredSchools([]);
+      setSchoolAthletesMap({});
     }
   };
 
@@ -757,9 +1178,14 @@ const AdminPage: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const handlePrintCertificates = async (result: CompetitionResult, rank: 1 | 2 | 3 | 'all') => {
+  const handlePrintCertificates = async (result: CompetitionResult, rank: 1 | 2 | 3 | 'all' = 'all', roleFilter: 'all' | 'athletes' | 'coaches' = 'all') => {
     setIsGenerating(true);
-    Swal.fire({ title: 'กำลังคำนวณลำดับเลขที่เกียรติบัตร...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    Swal.fire({ 
+      title: 'กำลังคำนวณลำดับเลขที่เกียรติบัตร...', 
+      html: '<p class="text-xs text-slate-500 mt-1">กำลังเตรียมข้อมูลนักกีฬาและครูผู้ฝึกสอน...</p>',
+      allowOutsideClick: false, 
+      didOpen: () => Swal.showLoading() 
+    });
     try {
       const getAthletesList = async (schoolId: string) => {
         if (!schoolId) return [];
@@ -777,17 +1203,246 @@ const AdminPage: React.FC = () => {
         getAthletesList(result.rank3SchoolId2 || '')
       ]);
 
-      let printData: { athletes: Athlete[], schoolName: string, rankTitle: string, globalOffset: number }[] = [];
-      if (rank === 1 || rank === 'all') if (athletesR1.length > 0) printData.push({ athletes: athletesR1, schoolName: result.rank1SchoolName, rankTitle: 'ชนะเลิศ', globalOffset: 0 });
-      if (rank === 2 || rank === 'all') if (athletesR2.length > 0) printData.push({ athletes: athletesR2, schoolName: result.rank2SchoolName, rankTitle: 'รองชนะเลิศอันดับ 1', globalOffset: athletesR1.length });
-      if (rank === 3 || rank === 'all') {
-        if (athletesR3.length > 0) printData.push({ athletes: athletesR3, schoolName: result.rank3SchoolName, rankTitle: 'รองชนะเลิศอันดับ 2', globalOffset: athletesR1.length + athletesR2.length });
-        if (athletesR3_2.length > 0 && result.rank3SchoolName2) {
-          printData.push({ athletes: athletesR3_2, schoolName: result.rank3SchoolName2, rankTitle: 'รองชนะเลิศอันดับ 2 (ร่วม)', globalOffset: athletesR1.length + athletesR2.length + athletesR3.length });
+      const coachesR1 = extractCoachesFromAthletes(athletesR1);
+      const coachesR2 = extractCoachesFromAthletes(athletesR2);
+      const coachesR3 = extractCoachesFromAthletes(athletesR3);
+      const coachesR3_2 = extractCoachesFromAthletes(athletesR3_2);
+
+      // ตรวจสอบโรงเรียนที่ได้รับรางวัลหลายอันดับ (เช่น กรีฑา รุ่นอายุไม่เกิน 15 ปี)
+      const rankSchoolIds = [
+        result.rank1SchoolId, 
+        result.rank2SchoolId, 
+        result.rank3SchoolId, 
+        result.rank3SchoolId2 || ''
+      ].filter(Boolean);
+
+      const schoolRankCount: Record<string, number> = {};
+      rankSchoolIds.forEach(id => {
+        schoolRankCount[id] = (schoolRankCount[id] || 0) + 1;
+      });
+
+      const schoolAssignedIdx: Record<string, number> = {};
+      const isRelay = (result.athleticsEvent || '').includes('ผลัด');
+
+      const getAthletesForRank = (schoolId: string, allAthletes: Athlete[]): Athlete[] => {
+        if (!schoolId || !allAthletes || allAthletes.length === 0) return [];
+        const appearsMultipleTimes = (schoolRankCount[schoolId] || 0) > 1;
+        if (!isRelay && appearsMultipleTimes && allAthletes.length > 1) {
+          const currentIdx = schoolAssignedIdx[schoolId] || 0;
+          schoolAssignedIdx[schoolId] = currentIdx + 1;
+          const assignedAth = allAthletes[currentIdx] || allAthletes[allAthletes.length - 1];
+          return [assignedAth];
         }
+        return allAthletes;
+      };
+
+      const finalAthletesR1 = getAthletesForRank(result.rank1SchoolId, athletesR1);
+      const finalAthletesR2 = getAthletesForRank(result.rank2SchoolId, athletesR2);
+      const finalAthletesR3 = getAthletesForRank(result.rank3SchoolId, athletesR3);
+      const finalAthletesR3_2 = getAthletesForRank(result.rank3SchoolId2 || '', athletesR3_2);
+
+      const cleanAthleticsEvent = result.athleticsEvent ? result.athleticsEvent.replace(/^\d+\s+/, '') : '';
+      const eventName = cleanAthleticsEvent ? `${result.sportName} (${cleanAthleticsEvent})` : result.sportName;
+
+      interface PrintItem {
+        certNo: string;
+        recipientName: string;
+        schoolName: string;
+        rankTitle: string;
+        achievementText: string;
+        eventName: string;
+        ageGroup: string;
+        isCoach: boolean;
+        rank: 1 | 2 | 3;
       }
 
-      if (printData.length === 0) { Swal.fire('ไม่พบข้อมูล', 'ไม่มีรายชื่อนักกีฬาในลำดับที่เลือก', 'info'); return; }
+      const allItems: PrintItem[] = [];
+      let globalCounter = 0;
+
+      // 1. ชนะเลิศ
+      if (result.rank1AthleteName) {
+        allItems.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          recipientName: result.rank1AthleteName,
+          schoolName: result.rank1SchoolName,
+          rankTitle: 'ชนะเลิศ',
+          achievementText: 'ได้รับรางวัล ชนะเลิศ',
+          eventName: eventName,
+          ageGroup: result.ageGroup,
+          isCoach: false,
+          rank: 1
+        });
+      } else {
+        finalAthletesR1.forEach(ath => {
+          allItems.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            recipientName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+            schoolName: result.rank1SchoolName,
+            rankTitle: 'ชนะเลิศ',
+            achievementText: 'ได้รับรางวัล ชนะเลิศ',
+            eventName: eventName,
+            ageGroup: result.ageGroup,
+            isCoach: false,
+            rank: 1
+          });
+        });
+      }
+      coachesR1.forEach(coach => {
+        allItems.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          recipientName: coach.fullName,
+          schoolName: result.rank1SchoolName,
+          rankTitle: 'ชนะเลิศ',
+          achievementText: 'ครูผู้ฝึกสอน ได้รับรางวัล ชนะเลิศ',
+          eventName: eventName,
+          ageGroup: result.ageGroup,
+          isCoach: true,
+          rank: 1
+        });
+      });
+
+      // 2. รองชนะเลิศอันดับ 1
+      if (result.rank2AthleteName) {
+        allItems.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          recipientName: result.rank2AthleteName,
+          schoolName: result.rank2SchoolName,
+          rankTitle: 'รองชนะเลิศอันดับ 1',
+          achievementText: 'ได้รับรางวัล รองชนะเลิศอันดับ 1',
+          eventName: eventName,
+          ageGroup: result.ageGroup,
+          isCoach: false,
+          rank: 2
+        });
+      } else {
+        finalAthletesR2.forEach(ath => {
+          allItems.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            recipientName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+            schoolName: result.rank2SchoolName,
+            rankTitle: 'รองชนะเลิศอันดับ 1',
+            achievementText: 'ได้รับรางวัล รองชนะเลิศอันดับ 1',
+            eventName: eventName,
+            ageGroup: result.ageGroup,
+            isCoach: false,
+            rank: 2
+          });
+        });
+      }
+      coachesR2.forEach(coach => {
+        allItems.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          recipientName: coach.fullName,
+          schoolName: result.rank2SchoolName,
+          rankTitle: 'รองชนะเลิศอันดับ 1',
+          achievementText: 'ครูผู้ฝึกสอน ได้รับรางวัล รองชนะเลิศอันดับ 1',
+          eventName: eventName,
+          ageGroup: result.ageGroup,
+          isCoach: true,
+          rank: 2
+        });
+      });
+
+      // 3. รองชนะเลิศอันดับ 2
+      if (result.rank3AthleteName) {
+        allItems.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          recipientName: result.rank3AthleteName,
+          schoolName: result.rank3SchoolName,
+          rankTitle: 'รองชนะเลิศอันดับ 2',
+          achievementText: 'ได้รับรางวัล รองชนะเลิศอันดับ 2',
+          eventName: eventName,
+          ageGroup: result.ageGroup,
+          isCoach: false,
+          rank: 3
+        });
+      } else {
+        finalAthletesR3.forEach(ath => {
+          allItems.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            recipientName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+            schoolName: result.rank3SchoolName,
+            rankTitle: 'รองชนะเลิศอันดับ 2',
+            achievementText: 'ได้รับรางวัล รองชนะเลิศอันดับ 2',
+            eventName: eventName,
+            ageGroup: result.ageGroup,
+            isCoach: false,
+            rank: 3
+          });
+        });
+      }
+      coachesR3.forEach(coach => {
+        allItems.push({
+          certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+          recipientName: coach.fullName,
+          schoolName: result.rank3SchoolName,
+          rankTitle: 'รองชนะเลิศอันดับ 2',
+          achievementText: 'ครูผู้ฝึกสอน ได้รับรางวัล รองชนะเลิศอันดับ 2',
+          eventName: eventName,
+          ageGroup: result.ageGroup,
+          isCoach: true,
+          rank: 3
+        });
+      });
+
+      // 4. รองชนะเลิศอันดับ 2 (ร่วม)
+      if (result.rank3SchoolId2 && result.rank3SchoolName2) {
+        if (result.rank3AthleteName2) {
+          allItems.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            recipientName: result.rank3AthleteName2,
+            schoolName: result.rank3SchoolName2!,
+            rankTitle: 'รองชนะเลิศอันดับ 2 (ร่วม)',
+            achievementText: 'ได้รับรางวัล รองชนะเลิศอันดับ 2 (ร่วม)',
+            eventName: eventName,
+            ageGroup: result.ageGroup,
+            isCoach: false,
+            rank: 3
+          });
+        } else {
+          finalAthletesR3_2.forEach(ath => {
+            allItems.push({
+              certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+              recipientName: `${ath.prefix}${ath.firstName} ${ath.lastName}`.trim(),
+              schoolName: result.rank3SchoolName2!,
+              rankTitle: 'รองชนะเลิศอันดับ 2 (ร่วม)',
+              achievementText: 'ได้รับรางวัล รองชนะเลิศอันดับ 2 (ร่วม)',
+              eventName: eventName,
+              ageGroup: result.ageGroup,
+              isCoach: false,
+              rank: 3
+            });
+          });
+        }
+        coachesR3_2.forEach(coach => {
+          allItems.push({
+            certNo: formatCertNo(result.certStartNo || '', globalCounter++),
+            recipientName: coach.fullName,
+            schoolName: result.rank3SchoolName2!,
+            rankTitle: 'รองชนะเลิศอันดับ 2 (ร่วม)',
+            achievementText: 'ครูผู้ฝึกสอน ได้รับรางวัล รองชนะเลิศอันดับ 2 (ร่วม)',
+            eventName: eventName,
+            ageGroup: result.ageGroup,
+            isCoach: true,
+            rank: 3
+          });
+        });
+      }
+
+      let printItems = allItems;
+      if (rank !== 'all') {
+        printItems = printItems.filter(item => item.rank === rank);
+      }
+      if (roleFilter === 'athletes') {
+        printItems = printItems.filter(item => !item.isCoach);
+      } else if (roleFilter === 'coaches') {
+        printItems = printItems.filter(item => item.isCoach);
+      }
+
+      if (printItems.length === 0) { 
+        Swal.fire('ไม่พบข้อมูล', 'ไม่มีรายชื่อตามเงื่อนไขที่เลือก (นักกีฬา/ครูผู้ฝึกสอน)', 'info'); 
+        return; 
+      }
 
       const printWindow = window.open('', '_blank');
       if (!printWindow) return;
@@ -795,28 +1450,22 @@ const AdminPage: React.FC = () => {
       const sportDef = sportTypes.find(s => s.id === result.sportId);
       const bgTemplate = sportDef?.certTemplate || '';
 
-      const certsHtml = printData.map(group => group.athletes.map((ath, idx) => {
-          const certNo = formatCertNo(result.certStartNo || '', group.globalOffset + idx);
-          const cleanAthleticsEvent = result.athleticsEvent ? result.athleticsEvent.replace(/^\d+\s+/, '') : '';
-          const eventName = cleanAthleticsEvent ? `${result.sportName} (${cleanAthleticsEvent})` : result.sportName;
-          
-          return `
-            <div class="certificate-page">
-              ${bgTemplate ? `<img src="${bgTemplate}" class="bg-template" />` : ''}
-              <div class="content-container">
-                <div class="header-section"><div class="cert-no">เลขที่ ${certNo}</div></div>
-                <div class="body-section">              
-                  <div class="recipient-name">${ath.prefix}${ath.firstName} ${ath.lastName}</div>
-                  <div class="school-name">${group.schoolName}</div>              
-                  <div class="achievement-details">
-                    <div class="achievement-text">ได้รับรางวัล ${group.rankTitle}</div>
-                    <div class="event-text">ประเภทกีฬา ${eventName} รุ่น${result.ageGroup}</div>
-                  </div>
-                </div>
+      const certsHtml = printItems.map((item) => `
+        <div class="certificate-page">
+          ${bgTemplate ? `<img src="${bgTemplate}" class="bg-template" />` : ''}
+          <div class="content-container">
+            <div class="header-section"><div class="cert-no">เลขที่ ${item.certNo}</div></div>
+            <div class="body-section">              
+              <div class="recipient-name">${item.recipientName}</div>
+              <div class="school-name">${item.schoolName}</div>              
+              <div class="achievement-details">
+                <div class="achievement-text">${item.achievementText}</div>
+                <div class="event-text">ประเภทกีฬา ${item.eventName} รุ่น${item.ageGroup}</div>
               </div>
             </div>
-          `;
-      }).join('')).join('');
+          </div>
+        </div>
+      `).join('');
 
       printWindow.document.write(`
         <html>
@@ -1291,7 +1940,16 @@ const AdminPage: React.FC = () => {
                                                 <p className="text-[9px] font-bold text-slate-400 mt-0.5 truncate">{rec.athleticsEvent}</p>
                                               )}
                                            </div>
-                                           <div className="flex items-center gap-3 ml-4 flex-shrink-0">
+                                           <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                                              <button
+                                                type="button"
+                                                onClick={() => handleOpenEditResult(rec)}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer shadow-xs active:scale-95"
+                                                title="คลิกเพื่อแก้ไขข้อมูลผลการแข่งขันและนักเรียน"
+                                              >
+                                                <Edit2 size={12} />
+                                                <span>แก้ไขผล</span>
+                                              </button>
                                               <label className="flex items-center gap-2 cursor-pointer group/toggle">
                                                 <div 
                                                   onClick={() => handleTogglePublish(rec)}
@@ -1623,15 +2281,62 @@ const AdminPage: React.FC = () => {
                       {r.athleticsEvent && <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{r.athleticsEvent}</div>}
                     </td>
                     <td className="px-8 py-5">
-                      <div className="flex items-center gap-2 font-black text-amber-600"><Medal size={16} className="text-yellow-500" /> {r.rank1SchoolName || '-'}</div>
-                      <div className="text-[10px] text-slate-400 mt-1">
-                        2: {r.rank2SchoolName || '-'} | 3: {r.rank3SchoolName || '-'}
-                        {r.rank3SchoolName2 && <span className="text-orange-500 font-bold">, {r.rank3SchoolName2} (ร่วม)</span>}
+                      <div className="flex flex-wrap items-center gap-2 font-black text-amber-600">
+                        <Medal size={16} className="text-yellow-500 shrink-0" /> 
+                        <span>{r.rank1SchoolName || '-'}</span>
+                        {r.rank1AthleteName && (
+                          <span className="text-[11px] font-bold text-amber-800 bg-amber-100/80 border border-amber-300 px-2 py-0.5 rounded-lg">
+                            👤 {r.rank1AthleteName}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-600 mt-1.5 space-y-1">
+                        {r.rank2SchoolName && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-slate-500">🥈 2:</span> 
+                            <span>{r.rank2SchoolName}</span>
+                            {r.rank2AthleteName && (
+                              <span className="text-[10px] text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                👤 {r.rank2AthleteName}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {r.rank3SchoolName && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-slate-500">🥉 3:</span> 
+                            <span>{r.rank3SchoolName}</span>
+                            {r.rank3AthleteName && (
+                              <span className="text-[10px] text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                👤 {r.rank3AthleteName}
+                              </span>
+                            )}
+                            {r.rank3SchoolName2 && (
+                              <span className="text-orange-600 font-bold ml-1">
+                                , {r.rank3SchoolName2} (ร่วม)
+                                {r.rank3AthleteName2 && <span className="font-normal text-slate-600"> ({r.rank3AthleteName2})</span>}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </td>
-                    <td className="px-8 py-5 text-center flex justify-center gap-2">
-                      <button onClick={() => { setEditingResult(r); setIsAddingNew(false); setResSportId(r.sportId); setResAgeGroup(r.ageGroup || ''); setResAthEvent(r.athleticsEvent || ''); }} className="p-2 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors"><Edit2 size={18} /></button>
-                      <button onClick={() => handleDeleteItem('deleteResult', r.id, `${r.sportName} ${r.ageGroup}`)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={18} /></button>
+                    <td className="px-8 py-5 text-center flex justify-center items-center gap-2">
+                      <button 
+                        onClick={() => handleOpenEditResult(r)} 
+                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-all shadow-xs cursor-pointer active:scale-95"
+                        title="คลิกเพื่อแก้ไขข้อมูลผลการแข่งขันและนักเรียน"
+                      >
+                        <Edit2 size={13} />
+                        แก้ไขผล
+                      </button>
+                      <button 
+                        onClick={() => handleDeleteItem('deleteResult', r.id, `${r.sportName} ${r.ageGroup}`)} 
+                        className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-red-200"
+                        title="ลบผลการแข่งขัน"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -1650,26 +2355,51 @@ const AdminPage: React.FC = () => {
                             <input type="text" placeholder="001/2568" value={r.certStartNo || ''} onChange={(e) => handleUpdateCertFieldLocally(r, 'certStartNo', e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-bold outline-none focus:ring-2 focus:ring-rose-500/20 group-hover:bg-white transition-all" />
                           </div>
                           <div className="pt-4">
-                            <button onClick={() => handleSaveCertConfig(r)} disabled={isSavingCert === r.id} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black transition-all active:scale-95 ${isSavingCert === r.id ? 'bg-slate-100 text-slate-400' : 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white shadow-sm'}`}>
+                            <button onClick={() => handleSaveCertConfig(r)} disabled={isSavingCert === r.id} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black transition-all active:scale-95 ${isSavingCert === r.id ? 'bg-slate-100 text-slate-400' : 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white shadow-sm cursor-pointer'}`}>
                               {isSavingCert === r.id ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
                               บันทึกค่า
                             </button>
                           </div>
                         </div>
-                        {r.certEndNo && (
-                          <div className="bg-rose-50/50 border border-rose-100 rounded-xl px-4 py-2 flex items-center justify-between group-hover:bg-white transition-all">
-                             <div className="flex items-center gap-2">
-                                <CheckCircle2 size={12} className="text-rose-500" />
-                                <span className="text-[9px] font-black text-rose-700 uppercase tracking-widest">เลขลำดับสุดท้าย:</span>
-                             </div>
-                             <span className="text-xs font-black text-rose-600">{r.certEndNo}</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex items-center gap-1.5 text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-lg">
+                            <CheckCircle2 size={11} className="text-emerald-500 shrink-0" />
+                            <span>ออกเกียรติบัตรครูผู้ฝึกสอนอัตโนมัติ</span>
                           </div>
-                        )}
+                          {r.certEndNo && (
+                            <div className="bg-rose-50/70 border border-rose-200 rounded-lg px-3 py-1 flex items-center gap-2">
+                               <span className="text-[9px] font-black text-rose-700 uppercase tracking-widest">เลขสุดท้าย:</span>
+                               <span className="text-xs font-black text-rose-600">{r.certEndNo}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </td>
                     <td className="px-8 py-5 text-center">
-                      <div className="flex flex-col gap-2">
-                         <button onClick={() => handlePrintCertificates(r, 'all')} className="w-full py-2.5 bg-rose-600 text-white rounded-xl font-black text-[10px] flex items-center justify-center gap-2 shadow-lg hover:bg-rose-700 active:scale-95 transition-all"><PrinterCheck size={14} /> พิมพ์ทั้งหมด</button>
+                      <div className="flex flex-col gap-1.5 min-w-[170px]">
+                         <button 
+                           onClick={() => handlePrintCertificates(r, 'all', 'all')} 
+                           title="พิมพ์เกียรติบัตรทั้งหมด ทั้งนักกีฬาและครูผู้ฝึกสอน"
+                           className="w-full py-2.5 bg-rose-600 text-white rounded-xl font-black text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-rose-700 active:scale-95 transition-all cursor-pointer"
+                         >
+                           <PrinterCheck size={14} /> พิมพ์ทั้งหมด (นร.+ครู)
+                         </button>
+                         <div className="grid grid-cols-2 gap-1.5">
+                           <button 
+                             onClick={() => handlePrintCertificates(r, 'all', 'athletes')} 
+                             title="พิมพ์เฉพาะเกียรติบัตรนักกีฬา"
+                             className="py-1.5 px-2 bg-slate-50 hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 hover:border-rose-300 rounded-lg font-bold text-[9px] transition-all cursor-pointer"
+                           >
+                             เฉพาะนักกีฬา
+                           </button>
+                           <button 
+                             onClick={() => handlePrintCertificates(r, 'all', 'coaches')} 
+                             title="พิมพ์เฉพาะเกียรติบัตรครูผู้ฝึกสอน"
+                             className="py-1.5 px-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 hover:border-amber-300 rounded-lg font-bold text-[9px] transition-all cursor-pointer flex items-center justify-center gap-1"
+                           >
+                             <span>🎓</span> ครูผู้ฝึกสอน
+                           </button>
+                         </div>
                       </div>
                     </td>
                   </tr>
@@ -2022,48 +2752,166 @@ const AdminPage: React.FC = () => {
       )}
 
       {editingResult && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
-          <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 my-8">
-            <div className={`p-8 text-white flex justify-between items-center ${isAddingNew ? 'bg-amber-600' : 'bg-amber-800'}`}>
-              <div className="flex items-center gap-4">
-                <div className="bg-white/20 p-3 rounded-2xl"><Award size={32} /></div>
-                <div>
-                  <h4 className="font-black text-2xl">จัดการผลการแข่งขัน</h4>
-                  <p className="text-white/70 text-xs font-bold uppercase tracking-widest mt-1">Competition Result Manager</p>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 md:p-6 bg-slate-900/60 backdrop-blur-md overflow-hidden">
+          <div className="bg-white w-full max-w-lg md:max-w-4xl lg:max-w-5xl xl:max-w-6xl h-[94dvh] sm:h-auto sm:max-h-[90vh] md:max-h-[88vh] rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 my-auto border border-slate-200/80">
+            {/* Header (Fixed at top, responsive padding & text size) */}
+            <div className={`px-4 py-3 sm:px-6 sm:py-4 text-white flex justify-between items-center shrink-0 ${isAddingNew ? 'bg-amber-600' : 'bg-amber-800'}`}>
+              <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+                <div className="bg-white/20 p-2 sm:p-2.5 rounded-xl shrink-0">
+                  <Award size={22} className="sm:w-6 sm:h-6" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="font-black text-base sm:text-xl lg:text-2xl leading-tight truncate">
+                    จัดการผลการแข่งขัน {isAddingNew ? '(เพิ่มใหม่)' : '(แก้ไขข้อมูล)'}
+                  </h4>
+                  <p className="text-white/80 text-[10px] sm:text-xs font-bold uppercase tracking-wider mt-0.5 truncate">
+                    {isAddingNew ? 'Competition Result Entry' : 'Competition Result Edit & Management'}
+                  </p>
                 </div>
               </div>
-              <button onClick={() => setEditingResult(null)} className="p-2 hover:bg-white/20 rounded-xl transition-colors"><X size={28} /></button>
+              <button 
+                type="button"
+                onClick={() => setEditingResult(null)} 
+                className="p-1.5 sm:p-2 hover:bg-white/20 active:scale-95 rounded-xl transition-all shrink-0 ml-2 cursor-pointer" 
+                title="ปิดหน้าต่าง"
+              >
+                <X size={22} className="sm:w-6 sm:h-6" />
+              </button>
             </div>
-            <form onSubmit={handleSaveResult} className="p-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <div className="space-y-4">
-                  <h5 className="text-[10px] font-black text-amber-600 uppercase tracking-widest border-l-4 border-amber-600 pl-3">ส่วนที่ 1: รายการแข่งขัน</h5>
-                  <div>
-                    <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชนิดกีฬา</label>
-                    <select required value={resSportId} onChange={(e) => setResSportId(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 transition-all">
-                      <option value="">-- เลือกกีฬา --</option>
-                      {sportTypes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">รุ่นอายุ</label>
-                    <select required value={resAgeGroup} onChange={(e) => setResAgeGroup(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 transition-all">
-                      <option value="">-- เลือกรุ่นอายุ --</option>
-                      {ageGroups.map(a => <option key={a.id} value={`${a.age} (${a.gender})`}>{a.age} ({a.gender})</option>)}
-                    </select>
-                  </div>
-                  {isAthletics && (
-                    <div className="animate-in slide-in-from-top-2">
-                      <label className="text-[10px] font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">รายการกรีฑา</label>
-                      <select required value={resAthEvent} onChange={(e) => setResAthEvent(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-amber-500/10 transition-all border-amber-200 bg-amber-50/20">
-                        <option value="">-- เลือกรายการ --</option>
-                        {athleticsList.map(ev => <option key={ev.id} value={`${ev.eventNo} ${ev.name}`}>{ev.eventNo}. {ev.name}</option>)}
-                      </select>
+
+            {/* Scrollable Form Body */}
+            <form onSubmit={handleSaveResult} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 md:p-6 space-y-4 sm:space-y-5">
+                {!isAddingNew && (
+                  <div className="p-3 sm:p-3.5 bg-amber-50 border border-amber-200 rounded-xl sm:rounded-2xl flex flex-wrap items-center justify-between gap-2.5 animate-in fade-in">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-1.5 sm:p-2 bg-amber-500 text-white rounded-lg sm:rounded-xl shadow-xs shrink-0">
+                        <Edit2 size={15} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-black text-amber-900 truncate">
+                          กำลังแก้ไขข้อมูลผลการแข่งขัน
+                        </div>
+                        <div className="text-[11px] text-amber-700 font-bold mt-0.5 truncate">
+                          {editingResult.sportName || 'กีฬา'} • {editingResult.ageGroup || 'ทุกรุ่นอายุ'} {editingResult.athleticsEvent ? `• ${editingResult.athleticsEvent}` : ''}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </div>
-                <div className="space-y-4">
-                  <h5 className="text-[10px] font-black text-emerald-600 uppercase tracking-widest border-l-4 border-emerald-600 pl-3">ส่วนที่ 2: สรุปผลรางวัล</h5>
+                    <span className="text-[10px] font-black uppercase tracking-wider bg-amber-200/90 text-amber-900 px-2.5 py-1 rounded-lg shrink-0">
+                      โหมดแก้ไขข้อมูล
+                    </span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-6 items-start">
+                  {/* ส่วนที่ 1: รายการแข่งขัน (Sticky บนจอใหญ่ สบายตา) */}
+                  <div className="md:col-span-5 lg:col-span-4 space-y-3.5 md:sticky md:top-0">
+                    <div className="bg-slate-50/80 border border-slate-200/90 rounded-2xl p-3.5 sm:p-4 space-y-3 shadow-2xs">
+                      <h5 className="text-[11px] font-black text-amber-700 uppercase tracking-wider flex items-center gap-1.5 border-l-4 border-amber-600 pl-2.5">
+                        ส่วนที่ 1: รายการแข่งขัน
+                      </h5>
+                      <div>
+                        <label className="text-[10px] font-black text-slate-500 block mb-1 px-1 uppercase tracking-widest">
+                          ชนิดกีฬา <span className="text-red-500">*</span>
+                        </label>
+                        <select 
+                          required 
+                          value={resSportId} 
+                          onChange={(e) => handleSportChange(e.target.value)} 
+                          className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all cursor-pointer text-xs sm:text-sm shadow-2xs"
+                        >
+                          <option value="">-- เลือกกีฬา --</option>
+                          {sportTypes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black text-slate-500 block mb-1 px-1 uppercase tracking-widest">
+                          รุ่นอายุ <span className="text-red-500">*</span>
+                        </label>
+                        <select 
+                          required 
+                          value={resAgeGroup} 
+                          onChange={(e) => handleAgeGroupChange(e.target.value)} 
+                          className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all cursor-pointer text-xs sm:text-sm shadow-2xs"
+                        >
+                          <option value="">-- เลือกรุ่นอายุ --</option>
+                          {ageGroups.map(a => {
+                            const ageStr = `${a.age} (${a.gender})`;
+                            const isRecorded = resSportId && !isAthletics && resultsList.some(r => {
+                              if (!isAddingNew && editingResult && r.id === editingResult.id) return false;
+                              const sport = sportTypes.find(s => s.id === resSportId);
+                              const matchSport = r.sportId === resSportId || (sport && r.sportName === sport.name);
+                              return matchSport && (r.ageGroup || '').trim().toLowerCase() === ageStr.trim().toLowerCase();
+                            });
+                            return (
+                              <option key={a.id} value={ageStr}>
+                                {ageStr} {isRecorded ? '⚠️ (มีผลแข่งขันแล้ว)' : ''}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                      {isAthletics && (
+                        <div className="animate-in slide-in-from-top-2">
+                          <label className="text-[10px] font-black text-slate-500 block mb-1 px-1 uppercase tracking-widest">
+                            รายการกรีฑา <span className="text-red-500">*</span>
+                          </label>
+                          <select 
+                            required 
+                            value={resAthEvent} 
+                            onChange={(e) => handleAthEventChange(e.target.value)} 
+                            className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border border-amber-300 bg-amber-50/20 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all cursor-pointer text-xs sm:text-sm shadow-2xs"
+                          >
+                            <option value="">-- เลือกรายการ --</option>
+                            {athleticsList.map(ev => {
+                              const evStr = `${ev.eventNo} ${ev.name}`;
+                              const isRecorded = resSportId && resAgeGroup && resultsList.some(r => {
+                                if (!isAddingNew && editingResult && r.id === editingResult.id) return false;
+                                const sport = sportTypes.find(s => s.id === resSportId);
+                                const matchSport = r.sportId === resSportId || (sport && r.sportName === sport.name);
+                                const matchAge = (r.ageGroup || '').trim().toLowerCase() === resAgeGroup.trim().toLowerCase();
+                                const matchAth = (r.athleticsEvent || '').trim().toLowerCase() === evStr.trim().toLowerCase();
+                                return matchSport && matchAge && matchAth;
+                              });
+                              return (
+                                <option key={ev.id} value={evStr}>
+                                  {ev.eventNo}. {ev.name} {isRecorded ? '⚠️ (มีผลแข่งขันแล้ว)' : ''}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                      )}
+
+                      {/* ป้ายเตือนหากพบผลการแข่งขันซ้ำซ้อน */}
+                      {(() => {
+                        const dup = checkDuplicateResult(
+                          resSportId,
+                          resAgeGroup,
+                          isAthletics ? resAthEvent : '',
+                          isAddingNew ? undefined : editingResult?.id
+                        );
+                        if (!dup) return null;
+                        return (
+                          <div className="p-3 bg-amber-50 border-2 border-amber-300 rounded-xl flex items-start gap-2 text-amber-900 animate-in fade-in">
+                            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={16} />
+                            <div className="text-xs">
+                              <strong className="block font-black text-amber-900">⚠️ รายการนี้มีผลในระบบแล้ว</strong>
+                              <p className="text-[11px] text-amber-700 mt-0.5 leading-snug">
+                                {dup.sportName} รุ่น {dup.ageGroup} {dup.athleticsEvent ? `(${dup.athleticsEvent})` : ''} มีบันทึกแล้ว เพื่อป้องกันการลงผลซ้ำซ้อน
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* ส่วนที่ 2: สรุปผลรางวัล (Spans 7 cols on md, 8 cols on lg) */}
+                  <div className="md:col-span-7 lg:col-span-8 space-y-3.5">
+                    <h5 className="text-[11px] font-black text-emerald-700 uppercase tracking-wider flex items-center gap-1.5 border-l-4 border-emerald-600 pl-2.5">
+                      ส่วนที่ 2: สรุปผลรางวัล
+                    </h5>
                   {isResLoadingSchools ? (
                     <div className="flex flex-col items-center justify-center py-20 gap-3 text-slate-400">
                       <Loader2 className="animate-spin" size={32} />
@@ -2082,108 +2930,520 @@ const AdminPage: React.FC = () => {
                       const r3 = editingResult.rank3SchoolId || '';
                       const r3_2 = editingResult.rank3SchoolId2 || '';
 
-                      // กรองเฉพาะโรงเรียนที่ลงทะเบียน และเมื่อเลือกรับรางวัลใดแล้วจะไม่แสดงใน Dropdown อื่นอีก
-                      const rank1Options = resRegisteredSchools.filter(s => s.id === r1 || (s.id !== r2 && s.id !== r3 && s.id !== r3_2));
-                      const rank2Options = resRegisteredSchools.filter(s => s.id === r2 || (s.id !== r1 && s.id !== r3 && s.id !== r3_2));
-                      const rank3Options = resRegisteredSchools.filter(s => s.id === r3 || (s.id !== r1 && s.id !== r2 && s.id !== r3_2));
-                      const rank3_2Options = resRegisteredSchools.filter(s => s.id === r3_2 || (s.id !== r1 && s.id !== r2 && s.id !== r3));
+                      // ตรวจสอบเงื่อนไขกรีฑารุ่นอายุไม่เกิน 15 ปี (อนุญาตให้แต่ละโรงเรียนส่งรายชื่อได้มากกว่า 1 คน และได้รับรางวัลมากกว่า 1 รางวัล)
+                      const isUnder15Athletics = Boolean(isAthletics && (resAgeGroup.includes('15') || resAgeGroup.includes('ไม่เกิน 15')));
+
+                      // Helper: รับประกันว่าโรงเรียนเดิมที่เคยบันทึกไว้จะไม่หายไปจาก dropdown ตัวเลือก แม้ยังโหลดรายชื่อโรงเรียนที่ลงทะเบียนไม่เสร็จ
+                      const ensureSchoolInOptions = (options: {id: string, name: string}[], schoolId?: string, schoolName?: string) => {
+                        if (!schoolId) return options;
+                        if (options.some(s => s.id === schoolId)) return options;
+                        const found = schools.find(s => s.id === schoolId);
+                        const name = schoolName || found?.name || `โรงเรียน ID: ${schoolId}`;
+                        return [{ id: schoolId, name }, ...options];
+                      };
+
+                      // หากเป็นกรีฑารุ่นอายุไม่เกิน 15 ปี อนุญาตให้โรงเรียนเดิมสามารถได้รับเหรียญรางวัลมากกว่า 1 รางวัลได้
+                      // หากเป็นกีฬา/รุ่นอายุอื่น จะกรองโรงเรียนที่ถูกเลือกแล้วออก เพื่อป้องกันการเลือกซ้ำ
+                      const baseRank1Options = isUnder15Athletics 
+                        ? resRegisteredSchools 
+                        : resRegisteredSchools.filter(s => s.id === r1 || (s.id !== r2 && s.id !== r3 && s.id !== r3_2));
+                      const baseRank2Options = isUnder15Athletics 
+                        ? resRegisteredSchools 
+                        : resRegisteredSchools.filter(s => s.id === r2 || (s.id !== r1 && s.id !== r3 && s.id !== r3_2));
+                      const baseRank3Options = isUnder15Athletics 
+                        ? resRegisteredSchools 
+                        : resRegisteredSchools.filter(s => s.id === r3 || (s.id !== r1 && s.id !== r2 && s.id !== r3_2));
+                      const baseRank3_2Options = isUnder15Athletics 
+                        ? resRegisteredSchools 
+                        : resRegisteredSchools.filter(s => s.id === r3_2 || (s.id !== r1 && s.id !== r2 && s.id !== r3));
+
+                      const rank1Options = ensureSchoolInOptions(baseRank1Options, r1, editingResult.rank1SchoolName);
+                      const rank2Options = ensureSchoolInOptions(baseRank2Options, r2, editingResult.rank2SchoolName);
+                      const rank3Options = ensureSchoolInOptions(baseRank3Options, r3, editingResult.rank3SchoolName);
+                      const rank3_2Options = ensureSchoolInOptions(baseRank3_2Options, r3_2, editingResult.rank3SchoolName2);
+
+                      const athletesR1 = r1 ? (schoolAthletesMap[r1] || []) : [];
+                      const athletesR2 = r2 ? (schoolAthletesMap[r2] || []) : [];
+                      const athletesR3 = r3 ? (schoolAthletesMap[r3] || []) : [];
+                      const athletesR3_2 = r3_2 ? (schoolAthletesMap[r3_2] || []) : [];
+
+                      const isLoadingR1 = Boolean(r1 && loadingAthletesForSchool[r1]);
+                      const isLoadingR2 = Boolean(r2 && loadingAthletesForSchool[r2]);
+                      const isLoadingR3 = Boolean(r3 && loadingAthletesForSchool[r3]);
+                      const isLoadingR3_2 = Boolean(r3_2 && loadingAthletesForSchool[r3_2]);
 
                       return (
                         <div className="space-y-4 animate-in fade-in">
+                          {isUnder15Athletics && (
+                            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-2.5 text-emerald-900 animate-in fade-in">
+                              <CheckCircle2 className="text-emerald-600 shrink-0 mt-0.5" size={18} />
+                              <div className="text-xs">
+                                <strong className="block font-black text-emerald-900">🌟 รายการกรีฑา รุ่นอายุไม่เกิน 15 ปี</strong>
+                                <span className="text-emerald-700">
+                                  โรงเรียนสามารถส่งนักกีฬาได้มากกว่า 1 คน ในช่องสรุปผลรางวัลนี้ ระบบอนุญาตให้บางโรงเรียนสามารถได้รับเหรียญรางวัลมากกว่า 1 เหรียญรางวัลได้ และสามารถเลือกชื่อนักเรียนในแต่ละรางวัลได้
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
                           {/* รางวัลชนะเลิศ (อันดับ 1) */}
-                          <div>
-                            <div className="flex items-center justify-between mb-2 px-1">
-                              <label className="text-[10px] font-black text-amber-500 flex items-center gap-1 uppercase tracking-widest">
-                                <Medal size={12} className="text-yellow-500" /> ชนะเลิศ (อันดับ 1 / เหรียญทอง) <span className="text-red-500">*</span>
+                          <div className="bg-amber-50/50 p-3.5 sm:p-4 rounded-xl sm:rounded-2xl border border-amber-200/90 space-y-2.5 sm:space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <label className="text-[10px] font-black text-amber-600 flex items-center gap-1.5 uppercase tracking-widest">
+                                <Medal size={14} className="text-yellow-500" /> ชนะเลิศ (อันดับ 1 / เหรียญทอง) <span className="text-red-500">*</span>
                               </label>
                             </div>
                             <select 
                               required 
-                              value={editingResult.rank1SchoolId || ''} 
-                              onChange={(e) => setEditingResult({...editingResult, rank1SchoolId: e.target.value})} 
-                              className="w-full px-5 py-3 bg-white border-2 border-amber-200 rounded-2xl font-bold text-slate-800 outline-none focus:border-amber-500 transition-all cursor-pointer"
+                              value={r1} 
+                              onChange={(e) => {
+                                const newId = e.target.value;
+                                const foundSchool = rank1Options.find(s => s.id === newId) || schools.find(s => s.id === newId);
+                                setEditingResult({
+                                  ...editingResult, 
+                                  rank1SchoolId: newId,
+                                  rank1SchoolName: foundSchool?.name || '',
+                                  rank1AthleteName: ''
+                                });
+                                if (newId) fetchAthletesForSchool(newId, resSportId, resAgeGroup, resAthEvent);
+                              }} 
+                              className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border-2 border-amber-300 rounded-xl font-bold text-slate-800 outline-none focus:border-amber-500 transition-all cursor-pointer text-xs sm:text-sm"
                             >
                               <option value="">-- เลือกโรงเรียนชนะเลิศ --</option>
-                              {rank1Options.map(s => <option key={s.id} value={s.id}>🥇 {s.name}</option>)}
+                              {rank1Options.map(s => {
+                                const isAlsoOther = isUnder15Athletics && (s.id === r2 || s.id === r3 || s.id === r3_2);
+                                return <option key={s.id} value={s.id}>🥇 {s.name}{isAlsoOther ? ' (ได้รับรางวัลอื่นในรายการนี้ด้วย)' : ''}</option>;
+                              })}
                             </select>
+
+                            {/* Dropdownlist เลือกชื่อนักเรียนเพื่อรับเหรียญรางวัล */}
+                            {r1 && (
+                              <div className="pt-1">
+                                {isLoadingR1 ? (
+                                  <div className="flex items-center gap-2 text-xs font-bold text-amber-700 bg-white/80 p-2.5 rounded-xl border border-amber-200/60">
+                                    <Loader2 size={14} className="animate-spin text-amber-600" />
+                                    <span>กำลังโหลดรายชื่อนักเรียน...</span>
+                                  </div>
+                                ) : athletesR1.length > 0 ? (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between px-1">
+                                      <label className="text-[10px] font-black text-amber-900 uppercase tracking-wider flex items-center gap-1.5">
+                                        <UserCheck size={13} className="text-amber-600" />
+                                        <span>เลือกชื่อนักเรียนผู้ได้รับเหรียญทอง</span>
+                                        {athletesR1.length > 1 && (
+                                          <span className="text-[9px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
+                                            มีนักเรียน {athletesR1.length} คน
+                                          </span>
+                                        )}
+                                      </label>
+                                      {editingResult.rank1AthleteName && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingResult({ ...editingResult, rank1AthleteName: '' })}
+                                          className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
+                                        >
+                                          ล้างชื่อนักเรียน
+                                        </button>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={editingResult.rank1AthleteName || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank1AthleteName: e.target.value })}
+                                      className="w-full px-4 py-2.5 bg-white border border-amber-300 rounded-xl font-bold text-slate-800 text-xs outline-none focus:ring-2 focus:ring-amber-500/20 transition-all cursor-pointer shadow-xs"
+                                    >
+                                      <option value="">-- {athletesR1.length > 1 ? `เลือกชื่อนักเรียน (พบ ${athletesR1.length} คน)` : 'เลือกชื่อนักเรียน (ถ้ามี)'} --</option>
+                                      {athletesR1.map((ath, idx) => {
+                                        const fullName = `${ath.prefix || ''}${ath.firstName} ${ath.lastName}`.trim();
+                                        const isChosenInOther = (
+                                          (fullName === editingResult.rank2AthleteName && r2 === r1) ||
+                                          (fullName === editingResult.rank3AthleteName && r3 === r1) ||
+                                          (fullName === editingResult.rank3AthleteName2 && r3_2 === r1)
+                                        );
+                                        return (
+                                          <option key={ath.id || `${ath.firstName}-${ath.lastName}-${idx}`} value={fullName}>
+                                            👤 {fullName} {isChosenInOther ? '(เลือกในอันดับอื่นแล้ว)' : ''}
+                                          </option>
+                                        );
+                                      })}
+                                      {editingResult.rank1AthleteName && !athletesR1.some(a => `${a.prefix || ''}${a.firstName} ${a.lastName}`.trim() === editingResult.rank1AthleteName) && (
+                                        <option value={editingResult.rank1AthleteName}>
+                                          👤 {editingResult.rank1AthleteName} (ข้อมูลเดิม)
+                                        </option>
+                                      )}
+                                    </select>
+                                    {athletesR1.length > 1 && (
+                                      <p className="text-[10px] text-amber-800 font-medium px-1 flex items-center gap-1">
+                                        <span>💡</span> โรงเรียนส่งนักกีฬามากกว่า 1 คน กรุณาเลือกชื่อนักเรียนเพื่อรับเหรียญรางวัลชนะเลิศ
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500 px-1 block">
+                                      ชื่อนักเรียนผู้ได้รับเหรียญทอง (ระบุเพิ่มเติมถ้ามี)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="ระบุชื่อ-สกุล นักเรียนผู้ได้รับเหรียญ (ถ้ามี)"
+                                      value={editingResult.rank1AthleteName || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank1AthleteName: e.target.value })}
+                                      className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-amber-500/20 text-slate-800"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           {/* รางวัลรองชนะเลิศอันดับ 1 (อันดับ 2) */}
-                          <div>
-                            <div className="flex items-center justify-between mb-2 px-1">
-                              <label className="text-[10px] font-black text-slate-500 flex items-center gap-1 uppercase tracking-widest">
-                                <Medal size={12} className="text-slate-400" /> รองชนะเลิศอันดับ 1 (อันดับ 2 / เหรียญเงิน)
+                          <div className="bg-slate-50/90 p-3.5 sm:p-4 rounded-xl sm:rounded-2xl border border-slate-200 space-y-2.5 sm:space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <label className="text-[10px] font-black text-slate-600 flex items-center gap-1.5 uppercase tracking-widest">
+                                <Medal size={14} className="text-slate-400" /> รองชนะเลิศอันดับ 1 (อันดับ 2 / เหรียญเงิน)
                               </label>
-                              {editingResult.rank2SchoolId && (
+                              {r2 && (
                                 <button
                                   type="button"
-                                  onClick={() => setEditingResult({ ...editingResult, rank2SchoolId: '', rank2SchoolName: '' })}
-                                  className="text-[10px] font-bold text-red-500 hover:underline"
+                                  onClick={() => setEditingResult({ ...editingResult, rank2SchoolId: '', rank2SchoolName: '', rank2AthleteName: '' })}
+                                  className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
                                 >
                                   ล้างค่า
                                 </button>
                               )}
                             </div>
                             <select 
-                              value={editingResult.rank2SchoolId || ''} 
-                              onChange={(e) => setEditingResult({...editingResult, rank2SchoolId: e.target.value})} 
-                              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-slate-500/10 transition-all cursor-pointer"
+                              value={r2} 
+                              onChange={(e) => {
+                                const newId = e.target.value;
+                                const foundSchool = rank2Options.find(s => s.id === newId) || schools.find(s => s.id === newId);
+                                setEditingResult({
+                                  ...editingResult, 
+                                  rank2SchoolId: newId,
+                                  rank2SchoolName: foundSchool?.name || '',
+                                  rank2AthleteName: ''
+                                });
+                                if (newId) fetchAthletesForSchool(newId, resSportId, resAgeGroup, resAthEvent);
+                              }} 
+                              className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-slate-500/10 transition-all cursor-pointer text-xs sm:text-sm"
                             >
                               <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
-                              {rank2Options.map(s => <option key={s.id} value={s.id}>🥈 {s.name}</option>)}
+                              {rank2Options.map(s => {
+                                const isAlsoOther = isUnder15Athletics && (s.id === r1 || s.id === r3 || s.id === r3_2);
+                                return <option key={s.id} value={s.id}>🥈 {s.name}{isAlsoOther ? ' (ได้รับรางวัลอื่นในรายการนี้ด้วย)' : ''}</option>;
+                              })}
                             </select>
+
+                            {/* Dropdownlist เลือกชื่อนักเรียนเพื่อรับเหรียญรางวัล */}
+                            {r2 && (
+                              <div className="pt-1">
+                                {isLoadingR2 ? (
+                                  <div className="flex items-center gap-2 text-xs font-bold text-slate-600 bg-white/80 p-2.5 rounded-xl border border-slate-200">
+                                    <Loader2 size={14} className="animate-spin text-slate-500" />
+                                    <span>กำลังโหลดรายชื่อนักเรียน...</span>
+                                  </div>
+                                ) : athletesR2.length > 0 ? (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between px-1">
+                                      <label className="text-[10px] font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                                        <UserCheck size={13} className="text-slate-500" />
+                                        <span>เลือกชื่อนักเรียนผู้ได้รับเหรียญเงิน</span>
+                                        {athletesR2.length > 1 && (
+                                          <span className="text-[9px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
+                                            มีนักเรียน {athletesR2.length} คน
+                                          </span>
+                                        )}
+                                      </label>
+                                      {editingResult.rank2AthleteName && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingResult({ ...editingResult, rank2AthleteName: '' })}
+                                          className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
+                                        >
+                                          ล้างชื่อนักเรียน
+                                        </button>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={editingResult.rank2AthleteName || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank2AthleteName: e.target.value })}
+                                      className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 text-xs outline-none focus:ring-2 focus:ring-slate-500/20 transition-all cursor-pointer shadow-xs"
+                                    >
+                                      <option value="">-- {athletesR2.length > 1 ? `เลือกชื่อนักเรียน (พบ ${athletesR2.length} คน)` : 'เลือกชื่อนักเรียน (ถ้ามี)'} --</option>
+                                      {athletesR2.map((ath, idx) => {
+                                        const fullName = `${ath.prefix || ''}${ath.firstName} ${ath.lastName}`.trim();
+                                        const isChosenInOther = (
+                                          (fullName === editingResult.rank1AthleteName && r1 === r2) ||
+                                          (fullName === editingResult.rank3AthleteName && r3 === r2) ||
+                                          (fullName === editingResult.rank3AthleteName2 && r3_2 === r2)
+                                        );
+                                        return (
+                                          <option key={ath.id || `${ath.firstName}-${ath.lastName}-${idx}`} value={fullName}>
+                                            👤 {fullName} {isChosenInOther ? '(เลือกในอันดับอื่นแล้ว)' : ''}
+                                          </option>
+                                        );
+                                      })}
+                                      {editingResult.rank2AthleteName && !athletesR2.some(a => `${a.prefix || ''}${a.firstName} ${a.lastName}`.trim() === editingResult.rank2AthleteName) && (
+                                        <option value={editingResult.rank2AthleteName}>
+                                          👤 {editingResult.rank2AthleteName} (ข้อมูลเดิม)
+                                        </option>
+                                      )}
+                                    </select>
+                                    {athletesR2.length > 1 && (
+                                      <p className="text-[10px] text-slate-600 font-medium px-1 flex items-center gap-1">
+                                        <span>💡</span> โรงเรียนส่งนักกีฬามากกว่า 1 คน กรุณาเลือกชื่อนักเรียนเพื่อรับเหรียญเงิน
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500 px-1 block">
+                                      ชื่อนักเรียนผู้ได้รับเหรียญเงิน (ระบุเพิ่มเติมถ้ามี)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="ระบุชื่อ-สกุล นักเรียนผู้ได้รับเหรียญ (ถ้ามี)"
+                                      value={editingResult.rank2AthleteName || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank2AthleteName: e.target.value })}
+                                      className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-slate-500/20 text-slate-800"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           {/* รางวัลรองชนะเลิศอันดับ 2 (อันดับ 3) */}
-                          <div>
-                            <div className="flex items-center justify-between mb-2 px-1">
-                              <label className="text-[10px] font-black text-orange-500 flex items-center gap-1 uppercase tracking-widest">
-                                <Medal size={12} className="text-orange-400" /> รองชนะเลิศอันดับ 2 (อันดับ 3 / เหรียญทองแดง)
+                          <div className="bg-orange-50/50 p-3.5 sm:p-4 rounded-xl sm:rounded-2xl border border-orange-200/90 space-y-2.5 sm:space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <label className="text-[10px] font-black text-orange-600 flex items-center gap-1.5 uppercase tracking-widest">
+                                <Medal size={14} className="text-orange-400" /> รองชนะเลิศอันดับ 2 (อันดับ 3 / เหรียญทองแดง)
                               </label>
-                              {editingResult.rank3SchoolId && (
+                              {r3 && (
                                 <button
                                   type="button"
-                                  onClick={() => setEditingResult({ ...editingResult, rank3SchoolId: '', rank3SchoolName: '' })}
-                                  className="text-[10px] font-bold text-red-500 hover:underline"
+                                  onClick={() => setEditingResult({ ...editingResult, rank3SchoolId: '', rank3SchoolName: '', rank3AthleteName: '' })}
+                                  className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
                                 >
                                   ล้างค่า
                                 </button>
                               )}
                             </div>
                             <select 
-                              value={editingResult.rank3SchoolId || ''} 
-                              onChange={(e) => setEditingResult({...editingResult, rank3SchoolId: e.target.value})} 
-                              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all cursor-pointer"
+                              value={r3} 
+                              onChange={(e) => {
+                                const newId = e.target.value;
+                                const foundSchool = rank3Options.find(s => s.id === newId) || schools.find(s => s.id === newId);
+                                setEditingResult({
+                                  ...editingResult, 
+                                  rank3SchoolId: newId,
+                                  rank3SchoolName: foundSchool?.name || '',
+                                  rank3AthleteName: ''
+                                });
+                                if (newId) fetchAthletesForSchool(newId, resSportId, resAgeGroup, resAthEvent);
+                              }} 
+                              className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border border-orange-200 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-orange-500/10 transition-all cursor-pointer text-xs sm:text-sm"
                             >
                               <option value="">-- เลือกโรงเรียน (ถ้ามี) --</option>
-                              {rank3Options.map(s => <option key={s.id} value={s.id}>🥉 {s.name}</option>)}
+                              {rank3Options.map(s => {
+                                const isAlsoOther = isUnder15Athletics && (s.id === r1 || s.id === r2 || s.id === r3_2);
+                                return <option key={s.id} value={s.id}>🥉 {s.name}{isAlsoOther ? ' (ได้รับรางวัลอื่นในรายการนี้ด้วย)' : ''}</option>;
+                              })}
                             </select>
+
+                            {/* Dropdownlist เลือกชื่อนักเรียนเพื่อรับเหรียญรางวัล */}
+                            {r3 && (
+                              <div className="pt-1">
+                                {isLoadingR3 ? (
+                                  <div className="flex items-center gap-2 text-xs font-bold text-orange-700 bg-white/80 p-2.5 rounded-xl border border-orange-200">
+                                    <Loader2 size={14} className="animate-spin text-orange-500" />
+                                    <span>กำลังโหลดรายชื่อนักเรียน...</span>
+                                  </div>
+                                ) : athletesR3.length > 0 ? (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between px-1">
+                                      <label className="text-[10px] font-black text-orange-900 uppercase tracking-wider flex items-center gap-1.5">
+                                        <UserCheck size={13} className="text-orange-500" />
+                                        <span>เลือกชื่อนักเรียนผู้ได้รับเหรียญทองแดง</span>
+                                        {athletesR3.length > 1 && (
+                                          <span className="text-[9px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
+                                            มีนักเรียน {athletesR3.length} คน
+                                          </span>
+                                        )}
+                                      </label>
+                                      {editingResult.rank3AthleteName && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingResult({ ...editingResult, rank3AthleteName: '' })}
+                                          className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
+                                        >
+                                          ล้างชื่อนักเรียน
+                                        </button>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={editingResult.rank3AthleteName || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank3AthleteName: e.target.value })}
+                                      className="w-full px-4 py-2.5 bg-white border border-orange-300 rounded-xl font-bold text-slate-800 text-xs outline-none focus:ring-2 focus:ring-orange-500/20 transition-all cursor-pointer shadow-xs"
+                                    >
+                                      <option value="">-- {athletesR3.length > 1 ? `เลือกชื่อนักเรียน (พบ ${athletesR3.length} คน)` : 'เลือกชื่อนักเรียน (ถ้ามี)'} --</option>
+                                      {athletesR3.map((ath, idx) => {
+                                        const fullName = `${ath.prefix || ''}${ath.firstName} ${ath.lastName}`.trim();
+                                        const isChosenInOther = (
+                                          (fullName === editingResult.rank1AthleteName && r1 === r3) ||
+                                          (fullName === editingResult.rank2AthleteName && r2 === r3) ||
+                                          (fullName === editingResult.rank3AthleteName2 && r3_2 === r3)
+                                        );
+                                        return (
+                                          <option key={ath.id || `${ath.firstName}-${ath.lastName}-${idx}`} value={fullName}>
+                                            👤 {fullName} {isChosenInOther ? '(เลือกในอันดับอื่นแล้ว)' : ''}
+                                          </option>
+                                        );
+                                      })}
+                                      {editingResult.rank3AthleteName && !athletesR3.some(a => `${a.prefix || ''}${a.firstName} ${a.lastName}`.trim() === editingResult.rank3AthleteName) && (
+                                        <option value={editingResult.rank3AthleteName}>
+                                          👤 {editingResult.rank3AthleteName} (ข้อมูลเดิม)
+                                        </option>
+                                      )}
+                                    </select>
+                                    {athletesR3.length > 1 && (
+                                      <p className="text-[10px] text-orange-800 font-medium px-1 flex items-center gap-1">
+                                        <span>💡</span> โรงเรียนส่งนักกีฬามากกว่า 1 คน กรุณาเลือกชื่อนักเรียนเพื่อรับเหรียญทองแดง
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500 px-1 block">
+                                      ชื่อนักเรียนผู้ได้รับเหรียญทองแดง (ระบุเพิ่มเติมถ้ามี)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="ระบุชื่อ-สกุล นักเรียนผู้ได้รับเหรียญ (ถ้ามี)"
+                                      value={editingResult.rank3AthleteName || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank3AthleteName: e.target.value })}
+                                      className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-orange-500/20 text-slate-800"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           {/* อันดับ 3 ร่วม (เหรียญทองแดง อีก 1 ทีม) */}
-                          <div className="p-3 bg-orange-50/70 rounded-2xl border border-orange-200/80 space-y-2">
+                          <div className="p-3.5 sm:p-4 bg-orange-50/70 rounded-xl sm:rounded-2xl border border-orange-200/90 space-y-2.5 sm:space-y-3">
                             <div className="flex items-center justify-between px-1">
-                              <label className="text-[10px] font-black text-orange-600 flex items-center gap-1 uppercase tracking-widest">
-                                <Medal size={12} className="text-orange-600" /> รองชนะเลิศอันดับ 2 ร่วม (อันดับ 3 ร่วม - เหรียญทองแดง)
+                              <label className="text-[10px] font-black text-orange-700 flex items-center gap-1.5 uppercase tracking-widest">
+                                <Medal size={14} className="text-orange-600" /> รองชนะเลิศอันดับ 2 ร่วม (อันดับ 3 ร่วม - เหรียญทองแดง)
                               </label>
-                              {editingResult.rank3SchoolId2 && (
+                              {r3_2 && (
                                 <button
                                   type="button"
-                                  onClick={() => setEditingResult({ ...editingResult, rank3SchoolId2: '', rank3SchoolName2: '' })}
-                                  className="text-[10px] font-bold text-red-500 hover:underline"
+                                  onClick={() => setEditingResult({ ...editingResult, rank3SchoolId2: '', rank3SchoolName2: '', rank3AthleteName2: '' })}
+                                  className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
                                 >
                                   ล้างค่า
                                 </button>
                               )}
                             </div>
                             <select 
-                              value={editingResult.rank3SchoolId2 || ''} 
-                              onChange={(e) => setEditingResult({...editingResult, rank3SchoolId2: e.target.value})} 
-                              className="w-full px-5 py-3 bg-white border border-orange-300 rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 transition-all cursor-pointer"
+                              value={r3_2} 
+                              onChange={(e) => {
+                                const newId = e.target.value;
+                                const foundSchool = rank3_2Options.find(s => s.id === newId) || schools.find(s => s.id === newId);
+                                setEditingResult({
+                                  ...editingResult, 
+                                  rank3SchoolId2: newId,
+                                  rank3SchoolName2: foundSchool?.name || '',
+                                  rank3AthleteName2: ''
+                                });
+                                if (newId) fetchAthletesForSchool(newId, resSportId, resAgeGroup, resAthEvent);
+                              }} 
+                              className="w-full px-3.5 py-2.5 sm:px-4 sm:py-3 bg-white border border-orange-300 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-orange-500/10 transition-all cursor-pointer text-xs sm:text-sm"
                             >
                               <option value="">-- เลือกโรงเรียนอันดับ 3 ร่วม (ถ้ามี) --</option>
-                              {rank3_2Options.map(s => <option key={s.id} value={s.id}>🥉 {s.name} (อันดับ 3 ร่วม)</option>)}
+                              {rank3_2Options.map(s => {
+                                const isAlsoOther = isUnder15Athletics && (s.id === r1 || s.id === r2 || s.id === r3);
+                                return <option key={s.id} value={s.id}>🥉 {s.name} (อันดับ 3 ร่วม){isAlsoOther ? ' (ได้รับรางวัลอื่นในรายการนี้ด้วย)' : ''}</option>;
+                              })}
                             </select>
+
+                            {/* Dropdownlist เลือกชื่อนักเรียนเพื่อรับเหรียญรางวัล */}
+                            {r3_2 && (
+                              <div className="pt-1">
+                                {isLoadingR3_2 ? (
+                                  <div className="flex items-center gap-2 text-xs font-bold text-orange-700 bg-white/80 p-2.5 rounded-xl border border-orange-200">
+                                    <Loader2 size={14} className="animate-spin text-orange-500" />
+                                    <span>กำลังโหลดรายชื่อนักเรียน...</span>
+                                  </div>
+                                ) : athletesR3_2.length > 0 ? (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between px-1">
+                                      <label className="text-[10px] font-black text-orange-900 uppercase tracking-wider flex items-center gap-1.5">
+                                        <UserCheck size={13} className="text-orange-600" />
+                                        <span>เลือกชื่อนักเรียนผู้ได้รับเหรียญทองแดง (ร่วม)</span>
+                                        {athletesR3_2.length > 1 && (
+                                          <span className="text-[9px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
+                                            มีนักเรียน {athletesR3_2.length} คน
+                                          </span>
+                                        )}
+                                      </label>
+                                      {editingResult.rank3AthleteName2 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingResult({ ...editingResult, rank3AthleteName2: '' })}
+                                          className="text-[10px] font-bold text-red-500 hover:underline cursor-pointer"
+                                        >
+                                          ล้างชื่อนักเรียน
+                                        </button>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={editingResult.rank3AthleteName2 || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank3AthleteName2: e.target.value })}
+                                      className="w-full px-4 py-2.5 bg-white border border-orange-300 rounded-xl font-bold text-slate-800 text-xs outline-none focus:ring-2 focus:ring-orange-500/20 transition-all cursor-pointer shadow-xs"
+                                    >
+                                      <option value="">-- {athletesR3_2.length > 1 ? `เลือกชื่อนักเรียน (พบ ${athletesR3_2.length} คน)` : 'เลือกชื่อนักเรียน (ถ้ามี)'} --</option>
+                                      {athletesR3_2.map((ath, idx) => {
+                                        const fullName = `${ath.prefix || ''}${ath.firstName} ${ath.lastName}`.trim();
+                                        const isChosenInOther = (
+                                          (fullName === editingResult.rank1AthleteName && r1 === r3_2) ||
+                                          (fullName === editingResult.rank2AthleteName && r2 === r3_2) ||
+                                          (fullName === editingResult.rank3AthleteName && r3 === r3_2)
+                                        );
+                                        return (
+                                          <option key={ath.id || `${ath.firstName}-${ath.lastName}-${idx}`} value={fullName}>
+                                            👤 {fullName} {isChosenInOther ? '(เลือกในอันดับอื่นแล้ว)' : ''}
+                                          </option>
+                                        );
+                                      })}
+                                      {editingResult.rank3AthleteName2 && !athletesR3_2.some(a => `${a.prefix || ''}${a.firstName} ${a.lastName}`.trim() === editingResult.rank3AthleteName2) && (
+                                        <option value={editingResult.rank3AthleteName2}>
+                                          👤 {editingResult.rank3AthleteName2} (ข้อมูลเดิม)
+                                        </option>
+                                      )}
+                                    </select>
+                                    {athletesR3_2.length > 1 && (
+                                      <p className="text-[10px] text-orange-800 font-medium px-1 flex items-center gap-1">
+                                        <span>💡</span> โรงเรียนส่งนักกีฬามากกว่า 1 คน กรุณาเลือกชื่อนักเรียนเพื่อรับเหรียญทองแดง (ร่วม)
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500 px-1 block">
+                                      ชื่อนักเรียนผู้ได้รับเหรียญทองแดงร่วม (ระบุเพิ่มเติมถ้ามี)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="ระบุชื่อ-สกุล นักเรียนผู้ได้รับเหรียญ (ถ้ามี)"
+                                      value={editingResult.rank3AthleteName2 || ''}
+                                      onChange={(e) => setEditingResult({ ...editingResult, rank3AthleteName2: e.target.value })}
+                                      className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-orange-500/20 text-slate-800"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
                             <p className="text-[10px] text-orange-700/80 px-1 font-medium">
                               * เพิ่มโรงเรียนที่ได้รับเหรียญทองแดงอีก 1 ทีม (สำหรับรายการแข่งขันที่มีอันดับ 3 ร่วม)
                             </p>
@@ -2194,9 +3454,60 @@ const AdminPage: React.FC = () => {
                   )}
                 </div>
               </div>
-              <button type="submit" disabled={!resSportId || !resAgeGroup || !editingResult.rank1SchoolId} className="w-full py-5 bg-slate-900 text-white rounded-[1.5rem] font-black shadow-xl shadow-slate-200 flex items-center justify-center gap-3 hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100">
-                <Save size={24} /> บันทึกผลการแข่งขัน
-              </button>
+            </div>
+
+              {/* Modal Sticky Footer Bar (ชัดเจน สะดวก ใช้งานง่ายทุกอุปกรณ์) */}
+              <div className="px-4 py-3 sm:px-6 sm:py-3.5 bg-slate-50 border-t border-slate-200 shrink-0 flex flex-col sm:flex-row items-center justify-between gap-2.5 sm:gap-4">
+                <div className="hidden sm:flex items-center gap-2 text-xs font-bold text-slate-500 min-w-0">
+                  {!resSportId || !resAgeGroup ? (
+                    <span className="text-slate-400">กรุณาเลือกชนิดกีฬาและรุ่นอายุ</span>
+                  ) : isAthletics && !resAthEvent ? (
+                    <span className="text-amber-600">กรุณาเลือกรายการกรีฑา</span>
+                  ) : !editingResult.rank1SchoolId ? (
+                    <span className="text-amber-600">กรุณาเลือกโรงเรียนชนะเลิศ (อันดับ 1)</span>
+                  ) : (() => {
+                    const dup = checkDuplicateResult(
+                      resSportId,
+                      resAgeGroup,
+                      isAthletics ? resAthEvent : '',
+                      isAddingNew ? undefined : editingResult.id
+                    );
+                    if (dup) return <span className="text-red-500 font-black">⚠️ รายการแข่งขันนี้มีผลในระบบแล้ว</span>;
+                    return (
+                      <span className="text-emerald-600 font-bold flex items-center gap-1.5">
+                        <CheckCircle2 size={15} /> ข้อมูลครบถ้วนพร้อมบันทึก
+                      </span>
+                    );
+                  })()}
+                </div>
+                <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setEditingResult(null)}
+                    className="flex-1 sm:flex-initial px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-xl border border-slate-300 font-bold text-slate-700 hover:bg-slate-100 active:scale-95 text-xs sm:text-sm transition-all cursor-pointer text-center"
+                  >
+                    ยกเลิก
+                  </button>
+                  {(() => {
+                    const dup = checkDuplicateResult(
+                      resSportId,
+                      resAgeGroup,
+                      isAthletics ? resAthEvent : '',
+                      isAddingNew ? undefined : editingResult.id
+                    );
+                    return (
+                      <button 
+                        type="submit" 
+                        disabled={!resSportId || !resAgeGroup || (isAthletics && !resAthEvent) || !editingResult.rank1SchoolId || Boolean(dup)} 
+                        className="flex-1 sm:flex-initial px-5 py-2.5 sm:px-6 sm:py-2.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white font-black rounded-xl shadow-md shadow-amber-200 flex items-center justify-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 text-xs sm:text-sm cursor-pointer"
+                      >
+                        <Save size={16} /> 
+                        <span>{dup ? 'รายการซ้ำซ้อน' : (isAddingNew ? 'บันทึกผลการแข่งขัน' : 'บันทึกการแก้ไขผล')}</span>
+                      </button>
+                    );
+                  })()}
+                </div>
+              </div>
             </form>
           </div>
         </div>
