@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserSession, SchoolProfile, Sport, Athlete, Coach, extractCoachesFromAthletes, CompetitionResult, FeedbackRecord, School, parseResponsibleSports } from '../types';
-import { SCRIPT_URL, ICON_MAP } from '../constants';
+import { SCRIPT_URL, ICON_MAP, safeFetchJson } from '../constants';
 import RegistrationPage from './RegistrationPage';
 import { 
   ClipboardList, 
@@ -138,22 +138,15 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     const fetchOverviewStats = async () => {
       setIsOverviewLoading(true);
       try {
-        const [regRes, resultsRes, sportsRes, accRes, profileRes, ageRes, athRes] = await Promise.all([
-          fetch(`${SCRIPT_URL}?action=getRegistrations&schoolId=${session.schoolId}`),
-          fetch(`${SCRIPT_URL}?action=getResults`),
-          fetch(`${SCRIPT_URL}?action=getSports`),
-          fetch(`${SCRIPT_URL}?action=getAccounts`),
-          fetch(`${SCRIPT_URL}?action=getSchoolProfile&schoolId=${session.schoolId}`),
-          fetch(`${SCRIPT_URL}?action=getAgeGroups`),
-          fetch(`${SCRIPT_URL}?action=getAthleticsList`)
+        const [regData, resultsData, sportsData, accData, profileData, ageData, athData] = await Promise.all([
+          safeFetchJson<any[]>(`${SCRIPT_URL}?action=getRegistrations&schoolId=${session.schoolId}`, []),
+          safeFetchJson<CompetitionResult[]>(`${SCRIPT_URL}?action=getResults`, []),
+          safeFetchJson<Sport[]>(`${SCRIPT_URL}?action=getSports`, []),
+          safeFetchJson<Record<string, any>>(`${SCRIPT_URL}?action=getAccounts`, {}),
+          safeFetchJson<SchoolProfile | null>(`${SCRIPT_URL}?action=getSchoolProfile&schoolId=${session.schoolId}`, null),
+          safeFetchJson<any[]>(`${SCRIPT_URL}?action=getAgeGroups`, []),
+          safeFetchJson<any[]>(`${SCRIPT_URL}?action=getAthleticsList`, [])
         ]);
-        const regData = await regRes.json();
-        const resultsData = await resultsRes.json();
-        const sportsData = await sportsRes.json();
-        const accData = await accRes.json();
-        const profileData = await profileRes.json();
-        const ageData = await ageRes.json();
-        const athData = await athRes.json();
         
         if (Array.isArray(regData)) setRegisteredCount(regData.length);
         if (Array.isArray(resultsData)) setResultsList(resultsData);
@@ -163,11 +156,11 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
         if (profileData && profileData.schoolId) {
           setProfile(profileData);
         }
-        if (accData) {
+        if (accData && typeof accData === 'object') {
           const mappedSchools = Object.keys(accData).map(id => ({ 
             id: String(id).trim(), 
-            name: accData[id].name || '',
-            responsibleSport: accData[id].responsibleSport || ''
+            name: accData[id]?.name || '',
+            responsibleSport: accData[id]?.responsibleSport || ''
           }));
           setSchools(mappedSchools);
         }
@@ -200,9 +193,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     setIsProfileLoading(true);
     setProfileError(null);
     try {
-      const response = await fetch(`${SCRIPT_URL}?action=getSchoolProfile&schoolId=${session.schoolId}`);
-      if (!response.ok) throw new Error('Network response was not ok');
-      const data = await response.json();
+      const data = await safeFetchJson<any>(`${SCRIPT_URL}?action=getSchoolProfile&schoolId=${session.schoolId}`, null);
       if (data && data.schoolId) {
         setProfile(data);
       } else if (data && data.status === 'error') {
@@ -219,8 +210,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
   const fetchSports = async () => {
     setIsSportsLoading(true);
     try {
-      const response = await fetch(`${SCRIPT_URL}?action=getSports`);
-      const data = await response.json();
+      const data = await safeFetchJson<Sport[]>(`${SCRIPT_URL}?action=getSports`, []);
       if (Array.isArray(data)) {
         setSportsList(data);
       }
@@ -233,8 +223,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
 
   const fetchCertificatesIssued = async () => {
     try {
-      const response = await fetch(`${SCRIPT_URL}?action=getCertificatesIssued`);
-      const data = await response.json();
+      const data = await safeFetchJson<any[]>(`${SCRIPT_URL}?action=getCertificatesIssued`, []);
       if (Array.isArray(data)) {
         setIssuedCertificates(data);
       }
@@ -246,10 +235,10 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
   const fetchRegisteredSportsOnly = async () => {
     setIsCheckListLoading(true);
     try {
-      const regRes = await fetch(`${SCRIPT_URL}?action=getRegistrations&schoolId=${session.schoolId}`);
-      const regIds = await regRes.json();
-      const sportsRes = await fetch(`${SCRIPT_URL}?action=getSports`);
-      const allSports = await sportsRes.json();
+      const [regIds, allSports] = await Promise.all([
+        safeFetchJson<string[]>(`${SCRIPT_URL}?action=getRegistrations&schoolId=${session.schoolId}`, []),
+        safeFetchJson<Sport[]>(`${SCRIPT_URL}?action=getSports`, [])
+      ]);
       
       if (Array.isArray(regIds) && Array.isArray(allSports)) {
         const filtered = allSports.filter(s => regIds.includes(s.id));
@@ -267,8 +256,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
     setIsAthletesLoading(true);
     fetchCertificatesIssued();
     try {
-      const response = await fetch(`${SCRIPT_URL}?action=getAthletes&schoolId=${session.schoolId}&sportId=${sport.id}`);
-      const data = await response.json();
+      const data = await safeFetchJson<Athlete[]>(`${SCRIPT_URL}?action=getAthletes&schoolId=${session.schoolId}&sportId=${sport.id}`, []);
       if (Array.isArray(data)) {
         setAthletesInSport(data);
       } else {
@@ -285,8 +273,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
   const fetchMyFeedbacks = async () => {
     setIsFetchingFeedback(true);
     try {
-      const response = await fetch(`${SCRIPT_URL}?action=getFeedbacks`);
-      const data = await response.json();
+      const data = await safeFetchJson<FeedbackRecord[]>(`${SCRIPT_URL}?action=getFeedbacks`, []);
       if (Array.isArray(data)) {
         const filtered = data.filter(f => f.schoolId === session.schoolId)
           .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -764,8 +751,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
       try {
         let url = `${SCRIPT_URL}?action=getRegisteredSchoolsForEvent&sportId=${sport.id}&ageGroup=${encodeURIComponent(liveAgeGroup)}`;
         if (liveAthEvent) url += `&athleticsEvent=${encodeURIComponent(liveAthEvent)}`;
-        const res = await fetch(url);
-        const data = await res.json();
+        const data = await safeFetchJson<any[]>(url, []);
         setLiveRegisteredSchools(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error('Fetch live schools error:', err);
@@ -868,8 +854,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
         setLiveRank3('');
         setLiveRank3_2('');
         // Refresh results
-        const resRes = await fetch(`${SCRIPT_URL}?action=getResults`);
-        const resData = await resRes.json();
+        const resData = await safeFetchJson<CompetitionResult[]>(`${SCRIPT_URL}?action=getResults`, []);
         if (Array.isArray(resData)) setResultsList(resData);
       } else {
         throw new Error(data.message);
@@ -2534,8 +2519,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ session, onNavigate }) =>
                 </div>
                 <button
                   onClick={async () => {
-                    const res = await fetch(`${SCRIPT_URL}?action=getResults`);
-                    const data = await res.json();
+                    const data = await safeFetchJson<CompetitionResult[]>(`${SCRIPT_URL}?action=getResults`, []);
                     if (Array.isArray(data)) setResultsList(data);
                     Swal.fire({ icon: 'success', title: 'รีเฟรชข้อมูลสำเร็จ', timer: 1000, showConfirmButton: false });
                   }}

@@ -63,7 +63,8 @@ function doGet(e) {
         id: String(r[0]).trim(), 
         eventNo: r[1] ? String(r[1]).trim() : '',
         name: r[2] ? String(r[2]).trim() : '', 
-        description: r[3] ? String(r[3]) : ''
+        description: r[3] ? String(r[3]) : '',
+        ageGroup: r[4] ? String(r[4]).trim() : ''
       }));
       return createJsonResponse(athletics);
     }
@@ -183,14 +184,21 @@ function doGet(e) {
       if (!sheet) return createJsonResponse([]);
       
       const data = sheet.getDataRange().getValues();
+      const isAth = sportsNameSheet.includes('กรีฑา');
       const athletes = data.slice(1).filter(r => {
         const rowSchoolId = String(r[0]).trim();
         const rowAgeGroup = String(r[7] || '').trim();
         const rowEvent = String(r[22] || '').trim();
         
         const matchSchool = schoolId ? (rowSchoolId === schoolId) : true;
-        const matchAge = ageGroup ? (rowAgeGroup.toLowerCase() === ageGroup.toLowerCase()) : true;
-        const matchEvent = athleticsEvent ? (rowEvent.toLowerCase() === athleticsEvent.toLowerCase()) : true;
+        let matchEvent = true;
+        let matchAge = true;
+        if (isAth) {
+          matchEvent = athleticsEvent ? (rowEvent.toLowerCase() === athleticsEvent.toLowerCase()) : true;
+          matchAge = (athleticsEvent || !ageGroup) ? true : (rowAgeGroup.toLowerCase() === ageGroup.toLowerCase());
+        } else {
+          matchAge = ageGroup ? (rowAgeGroup.toLowerCase() === ageGroup.toLowerCase()) : true;
+        }
         
         return matchSchool && matchAge && matchEvent;
       }).map(r => ({
@@ -450,17 +458,24 @@ function doPost(e) {
       }
 
       const data = sportSheet.getDataRange().getValues();
-      const targetAgeGroup = d.athletes[0] ? String(d.athletes[0].ageGroup).trim() : '';
+      const targetAgeGroup = d.athletes[0] ? String(d.athletes[0].ageGroup).trim() : (d.ageGroup ? String(d.ageGroup).trim() : '');
       const athleticsEvent = d.athleticsEvent ? String(d.athleticsEvent).trim() : '';
       const schoolIdStr = String(d.schoolId).trim();
+      const isAth = sheetName.includes('กรีฑา');
 
       for (let i = data.length - 1; i >= 1; i--) {
         const rowSchoolId = String(data[i][0]).trim();
         const rowAgeGroup = String(data[i][7]).trim();
         const rowEvent = (data[i][22] || '').toString().trim();
         const matchSchool = rowSchoolId === schoolIdStr;
-        const matchAge = targetAgeGroup ? (rowAgeGroup === targetAgeGroup) : true;
-        const matchEvent = athleticsEvent ? (rowEvent === athleticsEvent) : true;
+        let matchAge = true;
+        let matchEvent = true;
+        if (isAth) {
+          matchEvent = athleticsEvent ? (rowEvent.toLowerCase() === athleticsEvent.toLowerCase()) : true;
+          matchAge = athleticsEvent ? true : (targetAgeGroup ? (rowAgeGroup.toLowerCase() === targetAgeGroup.toLowerCase()) : true);
+        } else {
+          matchAge = targetAgeGroup ? (rowAgeGroup.toLowerCase() === targetAgeGroup.toLowerCase()) : true;
+        }
         if (matchSchool && matchAge && matchEvent) {
           sportSheet.deleteRow(i + 1);
         }
@@ -767,7 +782,7 @@ function doPost(e) {
     }
     if (action === 'updateAthletics') {
       const id = String(d.id).trim();
-      const rowData = [id, "'" + d.eventNo, d.name, d.description];
+      const rowData = [id, "'" + d.eventNo, d.name, d.description || '', d.ageGroup || ''];
       updateOrInsertRow(getOrCreateSheet(ss, 'athletics_list'), id, rowData);
       return createJsonResponse({ status: 'success' });
     }
@@ -801,7 +816,7 @@ function getOrCreateSheet(ss, name) {
       for (let i = 1; i <= 60; i++) headers.push('certTemplatePart' + i);
       sheet.appendRow(headers);
     } else if (name === 'athletics_list') {
-      sheet.appendRow(['id', 'ที่', 'รายการแข่งขัน', 'description']);
+      sheet.appendRow(['id', 'ที่', 'รายการแข่งขัน', 'description', 'รุ่นอายุ']);
       sheet.getRange("B:B").setNumberFormat("@");
     } else if (name === 'results') {
       sheet.appendRow(['id', 'sportId', 'sportName', 'ageGroup', 'athleticsEvent', 'rank1Id', 'rank1Name', 'rank2Id', 'rank2Name', 'rank3Id', 'rank3Name', 'timestamp', 'isPublished', 'certStartNo', 'certEndNo', 'certTemplate']);

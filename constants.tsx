@@ -45,3 +45,59 @@ export const ICON_MAP: Record<string, React.ReactNode> = {
   PersonStanding: <PersonStanding className="w-8 h-8" />,
   CircleDot: <CircleDot className="w-8 h-8" />,
 };
+
+/**
+ * ฟังก์ชันเรียกข้อมูล JSON อย่างปลอดภัย ป้องกันปัญหาเซิร์ฟเวอร์ส่ง HTML/DOCTYPE หรือข้อผิดพลาดชั่วคราว
+ */
+export async function safeFetchJson<T = any>(
+  url: string,
+  optionsOrFallback?: RequestInit | T,
+  fallbackVal: T = null as any,
+  retries = 1
+): Promise<T> {
+  let options: RequestInit | undefined = undefined;
+  let fallback: T = fallbackVal;
+
+  if (optionsOrFallback !== undefined) {
+    const isRequestInit = optionsOrFallback && typeof optionsOrFallback === 'object' && !Array.isArray(optionsOrFallback) &&
+      ('method' in (optionsOrFallback as any) || 'headers' in (optionsOrFallback as any) || 'body' in (optionsOrFallback as any) || 'signal' in (optionsOrFallback as any));
+    if (isRequestInit) {
+      options = optionsOrFallback as RequestInit;
+    } else {
+      fallback = optionsOrFallback as T;
+    }
+  }
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
+        return fallback;
+      }
+      const text = await res.text();
+      const trimmed = text.trim();
+      if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<!doctype')) {
+        console.warn(`Response from ${url} was not valid JSON (HTML/Doctype received)`);
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
+        return fallback;
+      }
+      return JSON.parse(text) as T;
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+        continue;
+      }
+      console.warn(`Fetch error for ${url}:`, err);
+      return fallback;
+    }
+  }
+  return fallback;
+}
+

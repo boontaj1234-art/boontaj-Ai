@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { SCRIPT_URL } from '../constants';
+import { SCRIPT_URL, safeFetchJson } from '../constants';
 import { School, AgeGroup, SportType, AthleticsEvent, CompetitionResult, Athlete, Coach, extractCoachesFromAthletes, FeedbackRecord, parseResponsibleSports, formatResponsibleSports } from '../types';
 import { 
   Users, 
@@ -138,8 +138,7 @@ const AdminPage: React.FC = () => {
     try {
       let url = `${SCRIPT_URL}?action=getAthletes&schoolId=${schoolId}&sportId=${targetSportId}&ageGroup=${encodeURIComponent(targetAgeGroup)}`;
       if (targetAthEvent) url += `&athleticsEvent=${encodeURIComponent(targetAthEvent)}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const data = await safeFetchJson<any[]>(url, []);
       if (Array.isArray(data)) {
         setSchoolAthletesMap(prev => ({ ...prev, [schoolId]: data }));
       }
@@ -313,50 +312,45 @@ const AdminPage: React.FC = () => {
   const fetchData = async () => {
     if (!isRefreshing) setIsLoading(true);
     try {
-      const [accRes, ageRes, sportRes, athleticsRes, resultsRes, feedbackRes, regRes, statsRes] = await Promise.all([
-        fetch(`${SCRIPT_URL}?action=getAccounts`),
-        fetch(`${SCRIPT_URL}?action=getAgeGroups`),
-        fetch(`${SCRIPT_URL}?action=getSports`),
-        fetch(`${SCRIPT_URL}?action=getAthleticsList`),
-        fetch(`${SCRIPT_URL}?action=getResults`),
-        fetch(`${SCRIPT_URL}?action=getFeedbacks`),
-        fetch(`${SCRIPT_URL}?action=getAllRegistrations`),
-        fetch(`${SCRIPT_URL}?action=getAnnouncementStats`)
+      const [accData, ageData, sportData, athleticsData, resultsData, feedbackData, regData, statsData] = await Promise.all([
+        safeFetchJson<Record<string, any>>(`${SCRIPT_URL}?action=getAccounts`, undefined, {}),
+        safeFetchJson<AgeGroup[]>(`${SCRIPT_URL}?action=getAgeGroups`, undefined, []),
+        safeFetchJson<SportType[]>(`${SCRIPT_URL}?action=getSports`, undefined, []),
+        safeFetchJson<AthleticsEvent[]>(`${SCRIPT_URL}?action=getAthleticsList`, undefined, []),
+        safeFetchJson<CompetitionResult[]>(`${SCRIPT_URL}?action=getResults`, undefined, []),
+        safeFetchJson<FeedbackRecord[]>(`${SCRIPT_URL}?action=getFeedbacks`, undefined, []),
+        safeFetchJson<any[]>(`${SCRIPT_URL}?action=getAllRegistrations`, undefined, []),
+        safeFetchJson<Record<string, any>>(`${SCRIPT_URL}?action=getAnnouncementStats`, undefined, {})
       ]);
       
-      const accData = await accRes.json();
-      const ageData = await ageRes.json();
-      const sportData = await sportRes.json();
-      const athleticsData = await athleticsRes.json();
-      const resultsData = await resultsRes.json();
-      const feedbackData = await feedbackRes.json();
-      const regData = await regRes.json();
-      const statsData = await statsRes.json();
+      if (accData && typeof accData === 'object' && Object.keys(accData).length > 0) {
+        const mappedSchools = Object.keys(accData).map(id => ({ 
+          id: String(id).trim(), 
+          name: accData[id].name || '',
+          username: accData[id].username || '',
+          password: accData[id].password || '',
+          responsibleSport: accData[id].responsibleSport || ''
+        }));
+        setSchools(mappedSchools);
+      }
       
-      const mappedSchools = Object.keys(accData).map(id => ({ 
-        id: String(id).trim(), 
-        name: accData[id].name || '',
-        username: accData[id].username || '',
-        password: accData[id].password || '',
-        responsibleSport: accData[id].responsibleSport || ''
-      }));
+      if (Array.isArray(ageData) && ageData.length > 0) setAgeGroups(ageData);
+      if (Array.isArray(sportData) && sportData.length > 0) setSportTypes(sportData);
+      if (Array.isArray(resultsData)) setResultsList(resultsData);
+      if (Array.isArray(feedbackData)) setFeedbackList(feedbackData);
+      if (Array.isArray(regData)) setAllRegistrations(regData);
+      if (statsData && typeof statsData === 'object') setAnnouncementStats(statsData);
       
-      setSchools(mappedSchools);
-      setAgeGroups(Array.isArray(ageData) ? ageData : []);
-      setSportTypes(Array.isArray(sportData) ? sportData : []);
-      setResultsList(Array.isArray(resultsData) ? resultsData : []);
-      setFeedbackList(Array.isArray(feedbackData) ? feedbackData : []);
-      setAllRegistrations(Array.isArray(regData) ? regData : []);
-      setAnnouncementStats(statsData || {});
-      
-      const sortedAthletics = Array.isArray(athleticsData) ? [...athleticsData].sort((a, b) => a.eventNo.localeCompare(b.eventNo)) : [];
-      setAthleticsList(sortedAthletics);
+      if (Array.isArray(athleticsData)) {
+        const sortedAthletics = [...athleticsData].sort((a, b) => (a.eventNo || '').localeCompare(b.eventNo || ''));
+        setAthleticsList(sortedAthletics);
+      }
     } catch (e) {
       console.error('Fetch error:', e);
       Swal.fire({
         icon: 'error',
-        title: 'การเชื่อมต่อล้มเหลว',
-        text: 'ไม่สามารถดึงข้อมูลได้ กรุณาลองใหม่ภายหลัง'
+        title: 'การเชื่อมต่อขัดข้อง',
+        text: 'ไม่สามารถดึงข้อมูลได้สมบูรณ์ กรุณากดปุ่มรีเฟรชเพื่อลองใหม่อีกครั้ง'
       });
     } finally {
       setIsLoading(false);
@@ -386,8 +380,7 @@ const AdminPage: React.FC = () => {
           url += `&athleticsEvent=${encodeURIComponent(resAthEvent)}`;
         }
         
-        const res = await fetch(url);
-        const data = await res.json();
+        const data = await safeFetchJson<any[]>(url, []);
         setResRegisteredSchools(Array.isArray(data) ? data : []);
       } catch (e) {
         console.error('Fetch registered schools error:', e);
@@ -439,17 +432,23 @@ const AdminPage: React.FC = () => {
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload)
       });
-      const result = await response.json();
-      if (result.status === 'success') {
+      const text = await response.text();
+      let result: any = null;
+      try {
+        result = JSON.parse(text);
+      } catch {
+        // Response was not JSON
+      }
+      if (result && result.status === 'success') {
         await fetchData();
         Swal.fire({ icon: 'success', title: 'ดำเนินการสำเร็จ', timer: 1500, showConfirmButton: false });
         return true;
       } else {
-        throw new Error(result.message);
+        throw new Error(result?.message || 'เซิร์ฟเวอร์ตอบกลับไม่ถูกต้องหรือกำลังประมวลผล กรุณารอสักครู่แล้วลองใหม่');
       }
     } catch (e: any) {
       console.error('POST Error:', e);
-      Swal.fire('เกิดข้อผิดพลาด', e.toString() || 'ไม่สามารถดำเนินการได้', 'error');
+      Swal.fire('เกิดข้อผิดพลาด', e.message || e.toString() || 'ไม่สามารถดำเนินการได้', 'error');
       return false;
     }
   };
@@ -467,8 +466,16 @@ const AdminPage: React.FC = () => {
           data: { schoolId, responsibleSport: formatted }
         })
       });
-      const res = await response.json();
-      if (res.status === 'success') {
+      let res: any = {};
+      try {
+        const text = await response.text();
+        if (text && !text.trim().startsWith('<')) {
+          res = JSON.parse(text);
+        }
+      } catch (err) {
+        console.warn('Failed to parse updateSchoolResponsibleSport response:', err);
+      }
+      if (res && res.status === 'success') {
         const Toast = Swal.mixin({
           toast: true,
           position: 'top-end',
@@ -570,8 +577,7 @@ const AdminPage: React.FC = () => {
         if (!schoolId) return [];
         let url = `${SCRIPT_URL}?action=getAthletes&schoolId=${schoolId}&sportId=${result.sportId}&ageGroup=${encodeURIComponent(result.ageGroup)}`;
         if (result.athleticsEvent) url += `&athleticsEvent=${encodeURIComponent(result.athleticsEvent)}`;
-        const res = await fetch(url);
-        const data = await res.json();
+        const data = await safeFetchJson<any[]>(url, []);
         return Array.isArray(data) ? data : [];
       };
 
@@ -601,7 +607,8 @@ const AdminPage: React.FC = () => {
       });
 
       const schoolAssignedIdx: Record<string, number> = {};
-      const isRelay = (result.athleticsEvent || '').includes('ผลัด');
+      const evName = (result.athleticsEvent || '').toLowerCase();
+      const isRelay = evName.includes('ผลัด') || evName.includes('4x') || evName.includes('5x') || /(\d+)\s*[xX*×]\s*\d+/.test(evName);
 
       const getAthletesForRank = (schoolId: string, allAthletes: Athlete[]): Athlete[] => {
         if (!schoolId || !allAthletes || allAthletes.length === 0) return [];
@@ -799,8 +806,16 @@ const AdminPage: React.FC = () => {
           }
         })
       });
-      const resData = await response.json();
-      if (resData.status === 'success') {
+      let resData: any = {};
+      try {
+        const text = await response.text();
+        if (text && !text.trim().startsWith('<')) {
+          resData = JSON.parse(text);
+        }
+      } catch (err) {
+        console.warn('Failed to parse updateCertNumbers response:', err);
+      }
+      if (resData && resData.status === 'success') {
         setResultsList(prev => prev.map(r => r.id === result.id ? { ...r, certEndNo: certEndNo } : r));
         Swal.fire({ 
           icon: 'success', 
@@ -1191,8 +1206,7 @@ const AdminPage: React.FC = () => {
         if (!schoolId) return [];
         let url = `${SCRIPT_URL}?action=getAthletes&schoolId=${schoolId}&sportId=${result.sportId}&ageGroup=${encodeURIComponent(result.ageGroup)}`;
         if (result.athleticsEvent) url += `&athleticsEvent=${encodeURIComponent(result.athleticsEvent)}`;
-        const res = await fetch(url);
-        const data = await res.json();
+        const data = await safeFetchJson<any[]>(url, []);
         return Array.isArray(data) ? data : [];
       };
 
@@ -1222,7 +1236,8 @@ const AdminPage: React.FC = () => {
       });
 
       const schoolAssignedIdx: Record<string, number> = {};
-      const isRelay = (result.athleticsEvent || '').includes('ผลัด');
+      const evName2 = (result.athleticsEvent || '').toLowerCase();
+      const isRelay = evName2.includes('ผลัด') || evName2.includes('4x') || evName2.includes('5x') || /(\d+)\s*[xX*×]\s*\d+/.test(evName2);
 
       const getAthletesForRank = (schoolId: string, allAthletes: Athlete[]): Athlete[] => {
         if (!schoolId || !allAthletes || allAthletes.length === 0) return [];
@@ -1609,7 +1624,11 @@ const AdminPage: React.FC = () => {
   const filteredSchools = schools.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredAgeGroups = ageGroups.filter(a => a.age.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredSportTypes = sportTypes.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
-  const filteredAthletics = athleticsList.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()) || s.eventNo.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredAthletics = athleticsList.filter(s => 
+    s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    s.eventNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (s.ageGroup && s.ageGroup.toLowerCase().includes(searchTerm.toLowerCase()))
+  );
   const filteredResults = resultsList.filter(r => 
     r.sportName.toLowerCase().includes(searchTerm.toLowerCase()) || 
     (r.athleticsEvent && r.athleticsEvent.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -1745,7 +1764,7 @@ const AdminPage: React.FC = () => {
                   if (activeTab === 'accounts') setEditingSchool({ id: Date.now().toString(), name: '', username: '', password: '' });
                   if (activeTab === 'ageGroups') setEditingAgeGroup({ id: `AG-${Date.now()}`, age: '', gender: 'ชาย' });
                   if (activeTab === 'sportTypes') setEditingSportType({ id: `S-${Date.now()}`, name: '', description: '', certTemplate: '', rulesPdf: '' });
-                  if (activeTab === 'athletics') setEditingAthletics({ id: `AT-${Date.now()}`, eventNo: '', name: '', description: '' });
+                  if (activeTab === 'athletics') setEditingAthletics({ id: `AT-${Date.now()}`, eventNo: '', name: '', description: '', ageGroup: '' });
                   if (activeTab === 'results') {
                       setEditingResult({ id: `RES-${Date.now()}`, rank1SchoolId: '', rank2SchoolId: '', rank3SchoolId: '', rank3SchoolId2: '' });
                       setResSportId(''); setResAgeGroup(''); setResAthEvent('');
@@ -2100,6 +2119,9 @@ const AdminPage: React.FC = () => {
                   <tr className="text-slate-500 text-[10px] uppercase font-black border-b bg-slate-50/50">
                     <th className="px-8 py-5 w-24 text-center">{activeTab === 'results' || activeTab === 'certificates' ? 'กีฬา' : 'ที่'}</th>
                     <th className="px-8 py-5">{activeTab === 'results' || activeTab === 'certificates' ? 'รุ่น / รายการ' : (activeTab === 'accounts' ? 'ชื่อโรงเรียน' : 'ชื่อรายการ')}</th>
+                    {activeTab === 'athletics' && (
+                      <th className="px-8 py-5 min-w-[160px]">รุ่นอายุ</th>
+                    )}
                     <th className="px-8 py-5">
                       {activeTab === 'sportTypes' ? 'เอกสาร/เทมเพลต' : (activeTab === 'certificates' ? 'กำหนดเลขที่เกียรติบัตร' : (activeTab === 'results' ? 'สรุปผู้ชนะ' : (activeTab === 'accounts' ? 'ชื่อผู้ใช้ / รหัสผ่าน' : 'รายละเอียด')))}
                     </th>
@@ -2266,10 +2288,19 @@ const AdminPage: React.FC = () => {
                   <tr key={s.id} className="hover:bg-orange-50/20 transition-all">
                     <td className="px-8 py-5 font-black text-orange-600 bg-orange-50/50 text-center">{s.eventNo}</td>
                     <td className="px-8 py-5 font-bold text-slate-800">{s.name}</td>
+                    <td className="px-8 py-5">
+                      {s.ageGroup ? (
+                        <span className="px-3 py-1 bg-orange-100 text-orange-800 border border-orange-200/90 rounded-full text-xs font-black inline-flex items-center gap-1 shadow-2xs">
+                          {s.ageGroup}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400 italic">ทุกรุ่นอายุ/ไม่ได้ระบุ</span>
+                      )}
+                    </td>
                     <td className="px-8 py-5 text-xs text-slate-500 truncate max-w-xs">{s.description || '-'}</td>
                     <td className="px-8 py-5 text-center flex justify-center gap-2">
-                      <button onClick={() => { setEditingAthletics(s); setIsAddingNew(false); }} className="p-2 text-orange-600 hover:bg-orange-100 rounded-lg"><Edit2 size={18} /></button>
-                      <button onClick={() => handleDeleteItem('deleteAthletics', s.id, s.name)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
+                      <button onClick={() => { setEditingAthletics(s); setIsAddingNew(false); }} className="p-2 text-orange-600 hover:bg-orange-100 rounded-lg transition-colors cursor-pointer" title="แก้ไขรายการกรีฑา"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteItem('deleteAthletics', s.id, `${s.eventNo} ${s.name}`)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors cursor-pointer" title="ลบรายการกรีฑา"><Trash2 size={18} /></button>
                     </td>
                   </tr>
                 ))}
@@ -2736,6 +2767,35 @@ const AdminPage: React.FC = () => {
               <div>
                 <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">ชื่อรายการแข่งขัน <span className="text-red-500">*</span></label>
                 <input type="text" required value={editingAthletics.name} onChange={(e) => setEditingAthletics({...editingAthletics, name: e.target.value})} className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all text-sm sm:text-base" placeholder="เช่น วิ่ง 100 เมตร, กระโดดไกล" />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <label className="text-[10px] sm:text-xs font-black text-slate-400 uppercase tracking-widest">
+                    รุ่นอายุ <span className="text-red-500">*</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-lg border border-orange-200">
+                    ดึงข้อมูลจาก sheet: age_groups
+                  </span>
+                </div>
+                <select
+                  required
+                  value={editingAthletics.ageGroup || ''}
+                  onChange={(e) => setEditingAthletics({...editingAthletics, ageGroup: e.target.value})}
+                  className="w-full px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl font-bold text-slate-800 outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all text-sm sm:text-base cursor-pointer"
+                >
+                  <option value="">-- เลือกรุ่นอายุ --</option>
+                  {ageGroups.map(ag => {
+                    const label = `${ag.age} (${ag.gender})`;
+                    return (
+                      <option key={ag.id} value={label}>
+                        {label}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1.5 px-1 font-medium">
+                  * กำหนดรุ่นอายุให้รายการกรีฑา เพื่อป้องกันการลงทะเบียนนักกีฬาผิดรุ่นอายุ
+                </p>
               </div>
               <div>
                 <label className="text-[10px] sm:text-xs font-black text-slate-400 block mb-2 px-1 uppercase tracking-widest">คำอธิบายเพิ่มเติม</label>

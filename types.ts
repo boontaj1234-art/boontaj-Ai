@@ -30,6 +30,7 @@ export interface AthleticsEvent {
   eventNo: string;
   name: string;
   description: string;
+  ageGroup?: string;
 }
 
 export interface AgeGroup {

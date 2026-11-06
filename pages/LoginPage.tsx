@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { SCRIPT_URL, SPORTS, ICON_MAP } from '../constants';
+import { SCRIPT_URL, SPORTS, ICON_MAP, safeFetchJson } from '../constants';
 import { MedalStanding, School, Sport, CompetitionResult, SchoolProfile, parseResponsibleSports } from '../types';
 import { 
   Trophy, 
@@ -93,21 +93,20 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   const fetchAllPublicData = async () => {
     setIsLoadingData(true);
     try {
-      const [accRes, sportsRes, resultsRes, profilesRes, regRes] = await Promise.all([
-        fetch(`${SCRIPT_URL}?action=getAccounts`).catch(() => null),
-        fetch(`${SCRIPT_URL}?action=getSports`).catch(() => null),
-        fetch(`${SCRIPT_URL}?action=getResults`).catch(() => null),
-        fetch(`${SCRIPT_URL}?action=getAllSchoolProfiles`).catch(() => null),
-        fetch(`${SCRIPT_URL}?action=getAllRegistrations`).catch(() => null),
+      const [accData, sportsData, resultsData, pData, regData] = await Promise.all([
+        safeFetchJson<Record<string, any>>(`${SCRIPT_URL}?action=getAccounts`, {}),
+        safeFetchJson<Sport[]>(`${SCRIPT_URL}?action=getSports`, SPORTS),
+        safeFetchJson<CompetitionResult[]>(`${SCRIPT_URL}?action=getResults`, []),
+        safeFetchJson<SchoolProfile[]>(`${SCRIPT_URL}?action=getAllSchoolProfiles`, []),
+        safeFetchJson<any[]>(`${SCRIPT_URL}?action=getAllRegistrations`, []),
       ]);
 
-      if (accRes && accRes.ok) {
-        const accData = await accRes.json();
+      if (accData && typeof accData === 'object') {
         const mappedSchools: School[] = Object.keys(accData).map(id => ({
           id: String(id).trim(),
-          name: accData[id].name || `โรงเรียน ID ${id}`,
-          username: (accData[id].username || '').toString().trim(),
-          responsibleSport: accData[id].responsibleSport || ''
+          name: accData[id]?.name || `โรงเรียน ID ${id}`,
+          username: (accData[id]?.username || '').toString().trim(),
+          responsibleSport: accData[id]?.responsibleSport || ''
         }));
         setSchools(mappedSchools);
 
@@ -117,36 +116,22 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         setAvailableSchools(list);
       }
 
-      if (sportsRes && sportsRes.ok) {
-        const sportsData = await sportsRes.json();
-        if (Array.isArray(sportsData) && sportsData.length > 0) {
-          setSportsList(sportsData);
-        } else {
-          setSportsList(SPORTS);
-        }
+      if (Array.isArray(sportsData) && sportsData.length > 0) {
+        setSportsList(sportsData);
       } else {
         setSportsList(SPORTS);
       }
 
-      if (resultsRes && resultsRes.ok) {
-        const resultsData = await resultsRes.json();
-        if (Array.isArray(resultsData)) {
-          setResultsList(resultsData);
-        }
+      if (Array.isArray(resultsData)) {
+        setResultsList(resultsData);
       }
 
-      if (profilesRes && profilesRes.ok) {
-        const pData = await profilesRes.json();
-        if (Array.isArray(pData)) {
-          setSchoolProfiles(pData);
-        }
+      if (Array.isArray(pData)) {
+        setSchoolProfiles(pData);
       }
 
-      if (regRes && regRes.ok) {
-        const regData = await regRes.json();
-        if (Array.isArray(regData)) {
-          setAllRegistrations(regData);
-        }
+      if (Array.isArray(regData)) {
+        setAllRegistrations(regData);
       }
 
       setLastUpdated(getThaiDateString());
@@ -345,18 +330,19 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
           setLoginError('Username หรือ Password แอดมินไม่ถูกต้อง');
         }
       } else {
-        const response = await fetch(`${SCRIPT_URL}?action=getAccounts`);
-        const credsMap = await response.json();
+        const credsMap = await safeFetchJson<Record<string, any>>(`${SCRIPT_URL}?action=getAccounts`, {});
         
         let foundId: string | null = null;
         let foundSchoolName: string | null = null;
 
-        for (const [id, creds] of Object.entries(credsMap as any)) {
-          const c = creds as any;
-          if (c.username.toString().trim() === inputUser && c.password.toString().trim() === inputPass) {
-            foundId = id;
-            foundSchoolName = c.name || inputUser;
-            break;
+        if (credsMap && typeof credsMap === 'object') {
+          for (const [id, creds] of Object.entries(credsMap)) {
+            const c = creds as any;
+            if (c?.username && c?.password && c.username.toString().trim() === inputUser && c.password.toString().trim() === inputPass) {
+              foundId = id;
+              foundSchoolName = c.name || inputUser;
+              break;
+            }
           }
         }
 
